@@ -130,6 +130,73 @@ QUALITY_BLACKLIST = {
     "fashion photography style",
     "hashtag-only commentary",
 }
+PIXIV_METADATA_NOISE_BLACKLIST = {
+    "1girl",
+    "1boy",
+    "2girls",
+    "2boys",
+    "3girls",
+    "3boys",
+    "solo",
+    "smile",
+    "looking at viewer",
+    "cover",
+    "cover page",
+    "commentary request",
+    "dynamic pose",
+    "dynamic composition",
+    "abstract background",
+    "simple background",
+    "white background",
+    "black background",
+    "transparent background",
+    "official style",
+}
+PIXIV_METADATA_PRIORITY_HINTS = {
+    "ahoge",
+    "animal ears",
+    "bangs",
+    "brows",
+    "ear",
+    "earrings",
+    "eyebrow",
+    "eyelash",
+    "eye",
+    "eyes",
+    "facial mark",
+    "fang",
+    "gradient",
+    "hair",
+    "hair ornament",
+    "hairclip",
+    "hairpin",
+    "horn",
+    "mouth",
+    "necklace",
+    "ornament",
+    "pupil",
+    "pupils",
+    "ribbon",
+    "shirt",
+    "skirt",
+    "sleeve",
+    "sleeveless",
+    "tail",
+    "tsurime",
+    "tareme",
+}
+PIXIV_METADATA_DEPRIORITIZE_HINTS = {
+    "background",
+    "composition",
+    "cover",
+    "page",
+    "pose",
+    "request",
+    "scenery",
+    "scene",
+    "shot",
+    "view",
+}
 PIXIV_TAG_LANGUAGE_OPTIONS = [
     {"value": "raw", "label": "原样"},
     {"value": "ja_priority", "label": "日文优先"},
@@ -773,15 +840,26 @@ class WebviewBridge:
             if pixiv_settings.get("use_metadata_tags", True):
                 if current_image:
                     prompt_tags, _ = self._extract_metadata_tags(current_image)
-                    metadata_tags.extend(prompt_tags)
-                    if metadata_tags:
-                        info_messages.append(f"已从当前图片 metadata 中提取 {len(metadata_tags)} 个测试标签。")
+                    classified = self._classify_metadata_tags(prompt_tags)
+                    metadata_tags.extend(classified["visual_tags"])
+                    if prompt_tags:
+                        info_messages.append(
+                            f"已从当前图片 metadata 中提取 {len(prompt_tags)} 个测试标签，经预清洗保留 {len(metadata_tags)} 个视觉标签。"
+                        )
+                    if classified["trigger_tokens"]:
+                        info_messages.append(
+                            f"已识别并隔离 {len(classified['trigger_tokens'])} 个疑似 trigger 词：{', '.join(classified['trigger_tokens'][:6])}"
+                        )
+                    if classified["noise_tags"]:
+                        info_messages.append(
+                            f"已过滤 {len(classified['noise_tags'])} 个 metadata 噪音词。"
+                        )
                     else:
                         warning_messages.append("当前图片没有可用 metadata 标签，综合整理测试将回退到样例 metadata 标签。")
                 else:
                     warning_messages.append("当前还没有加载图片，综合整理测试将回退到样例 metadata 标签。")
                 if not metadata_tags:
-                    metadata_tags = sample_tags.copy()
+                    metadata_tags = self._classify_metadata_tags(sample_tags)["visual_tags"]
             else:
                 info_messages.append("当前已关闭 metadata 标签提取，本次综合整理测试不会使用 metadata 标签。")
 
@@ -1523,6 +1601,83 @@ class WebviewBridge:
         cleaned = re.sub(r"\s+", " ", cleaned)
         return cleaned
 
+    def _looks_like_opaque_trigger_token(self, value: str) -> bool:
+        cleaned = self._canonicalize_tag(value)
+        lowered = cleaned.lower()
+        compact = lowered.replace(" ", "")
+        if not compact or " " in lowered:
+            return False
+        if self._has_cjk(compact):
+            return False
+        if not re.fullmatch(r"[a-z0-9_-]{6,24}", compact):
+            return False
+        if not re.search(r"[a-z]", compact):
+            return False
+        if len(re.findall(r"\d", compact)) < 2:
+            return False
+        return True
+
+    def _is_noisy_metadata_tag(self, value: str) -> bool:
+        cleaned = self._canonicalize_tag(value)
+        lowered = cleaned.lower()
+        if not lowered:
+            return True
+        if lowered in QUALITY_BLACKLIST:
+            return True
+        if lowered in PIXIV_METADATA_NOISE_BLACKLIST:
+            return True
+        return False
+
+    def _metadata_tag_priority(self, value: str) -> int:
+        cleaned = self._canonicalize_tag(value)
+        lowered = cleaned.lower()
+        score = 0
+        for hint in PIXIV_METADATA_PRIORITY_HINTS:
+            if hint in lowered:
+                score += 2
+        for hint in PIXIV_METADATA_DEPRIORITIZE_HINTS:
+            if hint in lowered:
+                score -= 2
+        if len(cleaned.split()) >= 3:
+            score += 1
+        return score
+
+    def _classify_metadata_tags(self, tags: List[str], *, limit: int = 24) -> Dict[str, List[str]]:
+        visual_scored: List[Tuple[int, int, str]] = []
+        noise_tags: List[str] = []
+        trigger_tokens: List[str] = []
+        seen_visual = set()
+        seen_noise = set()
+        seen_trigger = set()
+
+        for index, raw_tag in enumerate(tags or []):
+            cleaned = self._canonicalize_tag(raw_tag)
+            lowered = cleaned.lower()
+            if not cleaned:
+                continue
+            if self._looks_like_opaque_trigger_token(cleaned):
+                if lowered not in seen_trigger:
+                    seen_trigger.add(lowered)
+                    trigger_tokens.append(cleaned)
+                continue
+            if self._is_noisy_metadata_tag(cleaned):
+                if lowered not in seen_noise:
+                    seen_noise.add(lowered)
+                    noise_tags.append(cleaned)
+                continue
+            if lowered in seen_visual:
+                continue
+            seen_visual.add(lowered)
+            visual_scored.append((-self._metadata_tag_priority(cleaned), index, cleaned))
+
+        visual_scored.sort()
+        visual_tags = [tag for _, _, tag in visual_scored[:limit]]
+        return {
+            "visual_tags": visual_tags,
+            "noise_tags": noise_tags,
+            "trigger_tokens": trigger_tokens,
+        }
+
     def _has_cjk(self, value: str) -> bool:
         return bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]", value or ""))
 
@@ -1918,12 +2073,27 @@ class WebviewBridge:
         strategy = str(pixiv_settings.get("tag_language") or "ja_priority")
         metadata_tags: List[str] = []
         lora_tags: List[str] = []
+        metadata_trigger_tokens: List[str] = []
+        metadata_noise_tags: List[str] = []
 
         if pixiv_settings.get("use_metadata_tags", True):
             prompt_tags, extracted_loras = self._extract_metadata_tags(Path(image_path))
-            metadata_tags.extend(prompt_tags)
+            classified = self._classify_metadata_tags(prompt_tags)
+            metadata_tags.extend(classified["visual_tags"])
+            metadata_trigger_tokens.extend(classified["trigger_tokens"])
+            metadata_noise_tags.extend(classified["noise_tags"])
             if pixiv_settings.get("include_lora_tags", True):
                 lora_tags.extend(extracted_loras)
+            if info_messages is not None and prompt_tags:
+                info_messages.append(
+                    f"metadata 已预清洗：原始 {len(prompt_tags)} 个，保留 {len(metadata_tags)} 个视觉标签。"
+                )
+            if info_messages is not None and metadata_trigger_tokens:
+                info_messages.append(
+                    f"已隔离疑似 trigger 词：{', '.join(metadata_trigger_tokens[:6])}"
+                )
+            if info_messages is not None and metadata_noise_tags:
+                info_messages.append(f"已忽略 {len(metadata_noise_tags)} 个 metadata 噪音词。")
 
         llm_image_tags = self._generate_llm_pixiv_image_tags(
             Path(image_path),
@@ -2008,8 +2178,14 @@ class WebviewBridge:
         errors: List[str] = []
 
         metadata_tags: List[str] = []
+        trigger_tokens: List[str] = []
+        noise_tags: List[str] = []
         if pixiv_settings.get("use_metadata_tags", True):
-            metadata_tags, _ = self._extract_metadata_tags(Path(image_path))
+            raw_metadata_tags, _ = self._extract_metadata_tags(Path(image_path))
+            classified = self._classify_metadata_tags(raw_metadata_tags)
+            metadata_tags = list(classified["visual_tags"])
+            trigger_tokens = list(classified["trigger_tokens"])
+            noise_tags = list(classified["noise_tags"])
 
         tags = self._build_pixiv_tags(
             image_path,
@@ -2026,6 +2202,10 @@ class WebviewBridge:
         infos.extend(safety["infos"])
         warnings.extend(safety["warnings"])
         errors.extend(safety["errors"])
+        if trigger_tokens:
+            infos.append(f"疑似 trigger 词已从 Pixiv 标签候选中剔除：{', '.join(trigger_tokens[:6])}")
+        if noise_tags:
+            infos.append(f"metadata 噪音词已剔除 {len(noise_tags)} 个。")
         return {
             "tags": tags,
             "infos": infos,
