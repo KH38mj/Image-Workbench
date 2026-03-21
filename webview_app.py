@@ -48,7 +48,12 @@ from main import (
     normalize_upscale_engine,
     resolve_watermark_font_path,
 )
-from pixiv_llm import OpenAICompatiblePixivTagger, fetch_openai_compatible_models
+from pixiv_llm import (
+    DEFAULT_PIXIV_LLM_SYSTEM_PROMPT,
+    DEFAULT_PIXIV_LLM_VISION_PROMPT,
+    OpenAICompatiblePixivTagger,
+    fetch_openai_compatible_models,
+)
 from pixiv_uploader import (
     PIXIV_AGE_OPTIONS,
     PIXIV_BROWSER_CHANNELS,
@@ -261,6 +266,8 @@ PIXIV_DEFAULTS = {
     "llm_model": "",
     "llm_temperature": 0.1,
     "llm_timeout": 60,
+    "llm_metadata_prompt": "",
+    "llm_image_prompt": "",
     "title_template": "{stem}",
     "caption": "",
     "tags": "",
@@ -1288,6 +1295,8 @@ class WebviewBridge:
         merged["llm_base_url"] = str(merged.get("llm_base_url") or "https://api.openai.com/v1").strip()
         merged["llm_api_key"] = str(merged.get("llm_api_key") or "").strip()
         merged["llm_model"] = str(merged.get("llm_model") or "").strip()
+        merged["llm_metadata_prompt"] = str(merged.get("llm_metadata_prompt") or "").strip()
+        merged["llm_image_prompt"] = str(merged.get("llm_image_prompt") or "").strip()
         try:
             merged["llm_temperature"] = float(merged.get("llm_temperature", 0.1))
         except (TypeError, ValueError):
@@ -1480,6 +1489,7 @@ class WebviewBridge:
                 "base_url": pixiv_settings.get("llm_base_url", ""),
                 "model": pixiv_settings.get("llm_model", ""),
                 "temperature": pixiv_settings.get("llm_temperature", 0.1),
+                "metadata_prompt": pixiv_settings.get("llm_metadata_prompt", ""),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -1500,6 +1510,7 @@ class WebviewBridge:
                 "base_url": pixiv_settings.get("llm_base_url", ""),
                 "model": pixiv_settings.get("llm_model", ""),
                 "temperature": pixiv_settings.get("llm_temperature", 0.1),
+                "image_prompt": pixiv_settings.get("llm_image_prompt", ""),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -1542,6 +1553,8 @@ class WebviewBridge:
                 model=pixiv_settings.get("llm_model", ""),
                 temperature=pixiv_settings.get("llm_temperature", 0.1),
                 timeout=pixiv_settings.get("llm_timeout", 60),
+                system_prompt=pixiv_settings.get("llm_metadata_prompt", "") or None,
+                vision_system_prompt=pixiv_settings.get("llm_image_prompt", "") or None,
             )
             llm_tags = tagger.generate_tags(metadata_tags, limit=PIXIV_TAG_LIMIT)
             if use_cache:
@@ -1600,6 +1613,8 @@ class WebviewBridge:
                 model=pixiv_settings.get("llm_model", ""),
                 temperature=pixiv_settings.get("llm_temperature", 0.1),
                 timeout=pixiv_settings.get("llm_timeout", 60),
+                system_prompt=pixiv_settings.get("llm_metadata_prompt", "") or None,
+                vision_system_prompt=pixiv_settings.get("llm_image_prompt", "") or None,
             )
             llm_tags = tagger.generate_tags_from_image(candidate, limit=PIXIV_TAG_LIMIT)
             if use_cache and cache_key:

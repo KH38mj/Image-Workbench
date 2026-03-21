@@ -95,6 +95,7 @@ class OpenAICompatiblePixivTagger:
         temperature: float = 0.1,
         timeout: int = 60,
         system_prompt: Optional[str] = None,
+        vision_system_prompt: Optional[str] = None,
     ):
         self.base_url = str(base_url or "").strip()
         self.api_key = str(api_key or "").strip()
@@ -102,6 +103,7 @@ class OpenAICompatiblePixivTagger:
         self.temperature = max(0.0, min(float(temperature), 2.0))
         self.timeout = max(5, int(timeout))
         self.system_prompt = str(system_prompt or DEFAULT_PIXIV_LLM_SYSTEM_PROMPT).strip()
+        self.vision_system_prompt = str(vision_system_prompt or DEFAULT_PIXIV_LLM_VISION_PROMPT).strip()
 
     def is_ready(self) -> bool:
         return bool(self.base_url and self.model)
@@ -240,7 +242,7 @@ class OpenAICompatiblePixivTagger:
             "model": self.model,
             "temperature": self.temperature,
             "messages": [
-                {"role": "system", "content": DEFAULT_PIXIV_LLM_VISION_PROMPT},
+                {"role": "system", "content": self.vision_system_prompt},
                 {
                     "role": "user",
                     "content": [

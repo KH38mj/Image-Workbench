@@ -183,6 +183,8 @@ function cacheRefs() {
     'pixivLlmModelCustom',
     'pixivLlmTemperature',
     'pixivLlmTimeout',
+    'pixivLlmPromptMetadata',
+    'pixivLlmPromptImage',
     'pixivTitleTemplate',
     'pixivTags',
     'pixivCaption',
@@ -731,6 +733,8 @@ function hydratePixivForm(pixiv) {
   applyPixivLlmModelSelection(pixiv.llm_model || '');
   refs.pixivLlmTemperature.value = String(pixiv.llm_temperature ?? 0.1);
   refs.pixivLlmTimeout.value = String(pixiv.llm_timeout ?? 60);
+  refs.pixivLlmPromptMetadata.value = pixiv.llm_metadata_prompt || '';
+  refs.pixivLlmPromptImage.value = pixiv.llm_image_prompt || '';
   refs.pixivTitleTemplate.value = pixiv.title_template || '{stem}';
   refs.pixivTags.value = pixiv.tags || '';
   refs.pixivCaption.value = pixiv.caption || '';
@@ -1055,6 +1059,8 @@ function readPixivSettings() {
     llm_model: getActivePixivLlmModelValue(),
     llm_temperature: Number.parseFloat(refs.pixivLlmTemperature.value || '0.1'),
     llm_timeout: Number.parseInt(refs.pixivLlmTimeout.value || '60', 10),
+    llm_metadata_prompt: refs.pixivLlmPromptMetadata.value,
+    llm_image_prompt: refs.pixivLlmPromptImage.value,
     title_template: refs.pixivTitleTemplate.value.trim(),
     tags: refs.pixivTags.value,
     caption: refs.pixivCaption.value,
@@ -1136,6 +1142,8 @@ function syncPixivFieldState() {
   syncPixivLlmModelState();
   refs.pixivLlmTemperature.disabled = !enabled || !llmEnabled;
   refs.pixivLlmTimeout.disabled = !enabled || !llmEnabled;
+  refs.pixivLlmPromptMetadata.disabled = !enabled || !llmEnabled;
+  refs.pixivLlmPromptImage.disabled = !enabled || !llmEnabled;
   refs.testPixivLlmBtn.disabled = !enabled || !llmEnabled;
   updatePixivModeHint();
 }
