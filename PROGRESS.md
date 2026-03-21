@@ -455,3 +455,8 @@ ode --check and verified webview_app.py syntax with py_compile.
 - 新增 `tests/test_webview_config.py`：覆盖 `webview_app.py` 对 Pixiv / LLM 敏感字段的脱敏落盘，以及会话内继续可用的行为。
 - 使用系统 Python 运行 `python -m unittest discover -s tests -v`，3 个测试全部通过。
 - 重写 `test_setup.py`，清理乱码与不可读输出，改成干净的 ASCII 风格环境自检脚本。
+## 2026-03-21 进展记录（GitHub README 整理）
+
+- 重写 `README.md`，整理为更适合 GitHub 首页阅读的结构，包含项目概览、功能清单、环境要求、快速开始、超分说明、Pixiv 功能、安全说明与测试说明。
+- 明确标注推荐使用 `pywebview` 前端、CLI 示例、Pixiv 直传与 LLM 标签润色能力，以及敏感凭证不会持久化落盘的安全行为。
+- 将本次 README 整理作为提交 `41fc058`（`Polish README for GitHub`）推送到远端 `origin/main`。
