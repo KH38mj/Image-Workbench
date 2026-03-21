@@ -20,6 +20,7 @@ const state = {
     recentDownloadedFonts: [],
     fontHighlightTimer: null,
     pixivLlmModels: [],
+    lastSavedSettingsSnapshot: '',
   },
 };
 
@@ -27,6 +28,8 @@ const refs = {};
 let initialized = false;
 let startupFallbackTimer = null;
 let batchPollHandle = null;
+let settingsSaveHandle = null;
+const PIXIV_AUTOSAVE_DELAY = 500;
 const DEFAULT_WATERMARK_SAMPLE = 'YourName · 水印预览 2026';
 
 window.addEventListener('pywebviewready', maybeInit);
@@ -270,6 +273,7 @@ function bindEvents() {
   refs.wmText.addEventListener('input', updateWatermarkSampleText);
   refs.wmSampleMode.addEventListener('change', updateWatermarkSampleText);
   refs.loadOnlineFontsBtn.addEventListener('click', onLoadOnlineFonts);
+  bindSettingsAutosave();
   refs.downloadOnlineFontBtn.addEventListener('click', onDownloadOnlineFont);
   document.querySelectorAll('[data-font-query]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -294,6 +298,92 @@ function bindEvents() {
   });
 }
 
+function bindSettingsAutosave() {
+  const controls = [
+    refs.pixivEnabled,
+    refs.pixivUploadMode,
+    refs.pixivBrowser,
+    refs.pixivVisibility,
+    refs.pixivAge,
+    refs.pixivSubmitMode,
+    refs.pixivTagLanguage,
+    refs.pixivSafetyMode,
+    refs.pixivProfileDir,
+    refs.pixivCookie,
+    refs.pixivCsrfToken,
+    refs.pixivLlmEnabled,
+    refs.pixivLlmImageEnabled,
+    refs.pixivLlmBaseUrl,
+    refs.pixivLlmApiKey,
+    refs.pixivLlmModelPreset,
+    refs.pixivLlmModelCustom,
+    refs.pixivLlmTemperature,
+    refs.pixivLlmTimeout,
+    refs.pixivLlmPromptMetadata,
+    refs.pixivLlmPromptImage,
+    refs.pixivTitleTemplate,
+    refs.pixivTags,
+    refs.pixivCaption,
+    refs.pixivLockTags,
+    refs.pixivUseMetadataTags,
+    refs.pixivIncludeLoraTags,
+    refs.pixivAddOriginalTag,
+    refs.pixivAiGenerated,
+    refs.pixivAddUpscaleTag,
+    refs.pixivAddEngineTag,
+    refs.pixivAddModelTag,
+    refs.pixivAddScaleTag,
+    refs.batchInputDir,
+    refs.batchOutputDir,
+  ].filter(Boolean);
+
+  controls.forEach((control) => {
+    control.addEventListener('change', scheduleSettingsSave);
+    if (control.tagName === 'INPUT' || control.tagName === 'TEXTAREA') {
+      const type = String(control.type || '').toLowerCase();
+      if (!['checkbox', 'radio', 'range', 'file', 'button', 'submit'].includes(type)) {
+        control.addEventListener('input', scheduleSettingsSave);
+      }
+    }
+  });
+}
+
+function scheduleSettingsSave() {
+  if (!initialized || !window.pywebview?.api) {
+    return;
+  }
+  if (settingsSaveHandle) {
+    window.clearTimeout(settingsSaveHandle);
+  }
+  settingsSaveHandle = window.setTimeout(() => {
+    settingsSaveHandle = null;
+    void persistSettingsSilently();
+  }, PIXIV_AUTOSAVE_DELAY);
+}
+
+async function persistSettingsSilently() {
+  if (!initialized || !window.pywebview?.api) {
+    return;
+  }
+  const payload = buildSettings();
+  const snapshot = JSON.stringify(payload);
+  if (snapshot === state.ui.lastSavedSettingsSnapshot) {
+    return;
+  }
+  try {
+    const result = await window.pywebview.api.save_settings(payload);
+    if (!result.ok) {
+      throw new Error(result.error || '自动保存配置失败');
+    }
+    state.ui.lastSavedSettingsSnapshot = snapshot;
+    if (state.bootstrap && result.config) {
+      state.bootstrap.config = result.config;
+    }
+  } catch (error) {
+    pushLog(`自动保存配置失败: ${error && error.message ? error.message : error}`);
+}
+
+}
 function initSidebarTabs() {
   let saved = 'file';
   try {
@@ -382,6 +472,7 @@ function hydrateForm(config) {
   syncPixivFieldState();
   renderRecentDownloadedFonts(state.bootstrap?.recentDownloadedFonts || []);
   applyBatchSnapshot(state.bootstrap?.batch || {}, { pushLogs: false });
+  state.ui.lastSavedSettingsSnapshot = JSON.stringify(buildSettings());
 }
 
 function fillSelect(select, items) {

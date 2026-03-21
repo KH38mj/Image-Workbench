@@ -581,6 +581,25 @@ class WebviewBridge:
         except Exception as exc:
             return self._error_response(exc)
 
+    def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            with self._lock:
+                normalized = self._normalize_settings(settings)
+                batch_settings = self._normalize_batch_settings((settings or {}).get("batch", {}))
+                pixiv_settings = self._normalize_pixiv_settings((settings or {}).get("pixiv", {}))
+                self._config.update(normalized)
+                self._config["last_input_dir"] = batch_settings.get("input_dir", "")
+                self._config["last_output_dir"] = batch_settings.get("output_dir", "")
+                self._config["pixiv"] = pixiv_settings
+                self._save_config()
+                safe_config = json.loads(json.dumps(self._config, ensure_ascii=False))
+                safe_config.setdefault("pixiv", {})
+                for field in PIXIV_SENSITIVE_FIELDS:
+                    safe_config["pixiv"][field] = ""
+            return {"ok": True, "message": "配置已保存", "config": safe_config}
+        except Exception as exc:
+            return self._error_response(exc)
+
     def preview_pixiv_submission(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         try:
             with self._lock:
