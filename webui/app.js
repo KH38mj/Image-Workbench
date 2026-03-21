@@ -201,6 +201,7 @@ function cacheRefs() {
     'pixivAddModelTag',
     'pixivAddScaleTag',
     'pixivModeHint',
+    'pixivSaveState',
     'resetPreviewBtn',
     'renderPreviewBtn',
     'exportBtn',
@@ -348,10 +349,19 @@ function bindSettingsAutosave() {
   });
 }
 
+function updatePixivSaveState(message, kind = 'idle') {
+  if (!refs.pixivSaveState) {
+    return;
+  }
+  refs.pixivSaveState.textContent = message;
+  refs.pixivSaveState.dataset.state = kind;
+}
+
 function scheduleSettingsSave() {
   if (!initialized || !window.pywebview?.api) {
     return;
   }
+  updatePixivSaveState('等待自动保存…', 'pending');
   if (settingsSaveHandle) {
     window.clearTimeout(settingsSaveHandle);
   }
@@ -368,8 +378,10 @@ async function persistSettingsSilently() {
   const payload = buildSettings();
   const snapshot = JSON.stringify(payload);
   if (snapshot === state.ui.lastSavedSettingsSnapshot) {
+    updatePixivSaveState('配置已是最新状态', 'saved');
     return;
   }
+  updatePixivSaveState('等待自动保存…', 'pending');
   try {
     const result = await window.pywebview.api.save_settings(payload);
     if (!result.ok) {
@@ -379,11 +391,13 @@ async function persistSettingsSilently() {
     if (state.bootstrap && result.config) {
       state.bootstrap.config = result.config;
     }
+    updatePixivSaveState('已自动保存', 'saved');
   } catch (error) {
+    updatePixivSaveState('自动保存失败，请稍后重试', 'error');
     pushLog(`自动保存配置失败: ${error && error.message ? error.message : error}`);
+  }
 }
 
-}
 function initSidebarTabs() {
   let saved = 'file';
   try {
@@ -473,6 +487,7 @@ function hydrateForm(config) {
   renderRecentDownloadedFonts(state.bootstrap?.recentDownloadedFonts || []);
   applyBatchSnapshot(state.bootstrap?.batch || {}, { pushLogs: false });
   state.ui.lastSavedSettingsSnapshot = JSON.stringify(buildSettings());
+  updatePixivSaveState('配置改动会自动保存；敏感凭证不会落盘。', 'idle');
 }
 
 function fillSelect(select, items) {

@@ -542,6 +542,23 @@ kbd {
   line-height: 1.6;
 }
 
+.save-state-copy {
+  margin-top: 8px;
+  transition: color 180ms ease, opacity 180ms ease;
+}
+
+.save-state-copy[data-state="pending"] {
+  color: var(--accent);
+}
+
+.save-state-copy[data-state="saved"] {
+  color: var(--success);
+}
+
+.save-state-copy[data-state="error"] {
+  color: #d14343;
+}
+
 .progress-block {
   display: grid;
   gap: 12px;
