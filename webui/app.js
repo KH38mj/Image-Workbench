@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   bootstrap: null,
   source: null,
   preview: null,
@@ -19,6 +19,7 @@
     onlineFontItems: [],
     recentDownloadedFonts: [],
     fontHighlightTimer: null,
+    pixivLlmModels: [],
   },
 };
 
@@ -175,8 +176,10 @@ function cacheRefs() {
     'pixivLlmEnabled',
     'pixivLlmBaseUrl',
     'pixivLlmApiKey',
+    'loadPixivLlmModelsBtn',
     'testPixivLlmBtn',
-    'pixivLlmModel',
+    'pixivLlmModelPreset',
+    'pixivLlmModelCustom',
     'pixivLlmTemperature',
     'pixivLlmTimeout',
     'pixivTitleTemplate',
@@ -239,6 +242,8 @@ function bindEvents() {
   refs.pixivSubmitMode.addEventListener('change', updatePixivModeHint);
   refs.pixivSafetyMode.addEventListener('change', updatePixivModeHint);
   refs.pixivLlmEnabled.addEventListener('change', syncPixivFieldState);
+  refs.pixivLlmModelPreset.addEventListener('change', syncPixivLlmModelState);
+  refs.loadPixivLlmModelsBtn.addEventListener('click', onLoadPixivLlmModels);
   refs.testPixivLlmBtn.addEventListener('click', onTestPixivLlm);
   refs.startBatchBtn.addEventListener('click', onStartBatch);
   refs.stopBatchBtn.addEventListener('click', onStopBatch);
@@ -335,6 +340,7 @@ function hydrateStaticOptions(data) {
   fillSelect(refs.pixivAge, (data.pixivAgeOptions || []).map((value) => ({ value, label: value })));
   fillSelect(refs.pixivTagLanguage, data.pixivTagLanguageOptions || []);
   fillSelect(refs.pixivSafetyMode, data.pixivSafetyModeOptions || []);
+  renderPixivLlmModelOptions([]);
   renderOnlineFontList([]);
   renderRecentDownloadedFonts(data.recentDownloadedFonts || []);
 }
@@ -453,6 +459,50 @@ function updateWatermarkFontPreview() {
 
   refs.wmFontPreview.textContent = `当前字体：${preview}`;
   refs.wmFontPreview.title = customPath || selected || '默认：Dancing Script';
+}
+
+function renderPixivLlmModelOptions(items) {
+  state.ui.pixivLlmModels = Array.isArray(items) ? items : [];
+  fillSelect(refs.pixivLlmModelPreset, [
+    { value: '', label: '先点击读取模型' },
+    ...state.ui.pixivLlmModels,
+    { value: '__custom__', label: '自定义模型名' },
+  ]);
+}
+
+function applyPixivLlmModelSelection(model) {
+  const value = String(model || '').trim();
+  const matched = Array.from(refs.pixivLlmModelPreset.options).some(
+    (option) => option.value === value && value && value !== '__custom__',
+  );
+  if (!value) {
+    refs.pixivLlmModelPreset.value = '';
+    refs.pixivLlmModelCustom.value = '';
+  } else if (matched) {
+    refs.pixivLlmModelPreset.value = value;
+    refs.pixivLlmModelCustom.value = '';
+  } else {
+    refs.pixivLlmModelPreset.value = '__custom__';
+    refs.pixivLlmModelCustom.value = value;
+  }
+  syncPixivLlmModelState();
+}
+
+function getActivePixivLlmModelValue() {
+  const preset = String(refs.pixivLlmModelPreset.value || '').trim();
+  if (preset && preset !== '__custom__') {
+    return preset;
+  }
+  return String(refs.pixivLlmModelCustom.value || '').trim();
+}
+
+function syncPixivLlmModelState() {
+  const enabled = refs.pixivEnabled.checked;
+  const llmEnabled = refs.pixivLlmEnabled.checked;
+  const useCustom = refs.pixivLlmModelPreset.value === '__custom__';
+  refs.pixivLlmModelPreset.disabled = !enabled || !llmEnabled;
+  refs.loadPixivLlmModelsBtn.disabled = !enabled || !llmEnabled;
+  refs.pixivLlmModelCustom.disabled = !enabled || !llmEnabled || !useCustom;
 }
 
 async function refreshWatermarkFontSample() {
@@ -674,7 +724,8 @@ function hydratePixivForm(pixiv) {
   refs.pixivLlmEnabled.checked = !!pixiv.llm_enabled;
   refs.pixivLlmBaseUrl.value = pixiv.llm_base_url || 'https://api.openai.com/v1';
   refs.pixivLlmApiKey.value = pixiv.llm_api_key || '';
-  refs.pixivLlmModel.value = pixiv.llm_model || '';
+  renderPixivLlmModelOptions([]);
+  applyPixivLlmModelSelection(pixiv.llm_model || '');
   refs.pixivLlmTemperature.value = String(pixiv.llm_temperature ?? 0.1);
   refs.pixivLlmTimeout.value = String(pixiv.llm_timeout ?? 60);
   refs.pixivTitleTemplate.value = pixiv.title_template || '{stem}';
@@ -831,6 +882,26 @@ async function onBrowseDirectory(targetRef, label) {
   }
 }
 
+async function onLoadPixivLlmModels() {
+  refs.loadPixivLlmModelsBtn.disabled = true;
+  updateStatusBadge('状态: 正在读取提供商模型列表');
+  try {
+    const result = await window.pywebview.api.fetch_pixiv_llm_models({ pixiv: readPixivSettings() });
+    if (!result.ok) {
+      throw new Error(result.error || '读取模型列表失败');
+    }
+    renderPixivLlmModelOptions(result.items || []);
+    applyPixivLlmModelSelection(result.selected || getActivePixivLlmModelValue());
+    pushLog(result.message || `已读取 ${result.items?.length || 0} 个模型`);
+    updateStatusBadge(result.message || '状态: 已更新模型列表');
+  } catch (error) {
+    pushLog(`读取 Pixiv LLM 模型失败: ${error && error.message ? error.message : error}`);
+    updateStatusBadge('状态: 读取模型列表失败');
+  } finally {
+    syncPixivFieldState();
+  }
+}
+
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
   updateStatusBadge('状态: 正在测试 Pixiv LLM');
@@ -974,7 +1045,7 @@ function readPixivSettings() {
     llm_enabled: refs.pixivLlmEnabled.checked,
     llm_base_url: refs.pixivLlmBaseUrl.value.trim(),
     llm_api_key: refs.pixivLlmApiKey.value.trim(),
-    llm_model: refs.pixivLlmModel.value.trim(),
+    llm_model: getActivePixivLlmModelValue(),
     llm_temperature: Number.parseFloat(refs.pixivLlmTemperature.value || '0.1'),
     llm_timeout: Number.parseInt(refs.pixivLlmTimeout.value || '60', 10),
     title_template: refs.pixivTitleTemplate.value.trim(),
@@ -1048,7 +1119,7 @@ function syncPixivFieldState() {
   refs.pixivCsrfToken.disabled = !enabled || !directMode;
   refs.pixivLlmBaseUrl.disabled = !enabled || !llmEnabled;
   refs.pixivLlmApiKey.disabled = !enabled || !llmEnabled;
-  refs.pixivLlmModel.disabled = !enabled || !llmEnabled;
+  syncPixivLlmModelState();
   refs.pixivLlmTemperature.disabled = !enabled || !llmEnabled;
   refs.pixivLlmTimeout.disabled = !enabled || !llmEnabled;
   refs.testPixivLlmBtn.disabled = !enabled || !llmEnabled;

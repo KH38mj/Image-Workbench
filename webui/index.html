@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -373,7 +373,14 @@
               </label>
               <label class="field">
                 <span>LLM Model</span>
-                <input type="text" id="pixivLlmModel" placeholder="例如 gpt-4.1-mini / qwen / gemma 等兼容模型名">
+                <div class="inline-grid wide">
+                  <select id="pixivLlmModelPreset"></select>
+                  <button id="loadPixivLlmModelsBtn" class="button ghost" type="button">读取模型</button>
+                </div>
+              </label>
+              <label class="field">
+                <span>自定义模型名</span>
+                <input type="text" id="pixivLlmModelCustom" placeholder="下拉里没有时，在这里填兼容模型名">
               </label>
               <label class="field">
                 <span>Temperature</span>
@@ -409,6 +416,7 @@
               <label class="switch card-switch"><input type="checkbox" id="pixivLockTags"><span>不允许其他用户编辑标签</span></label>
             </div>
             <p class="support-copy" id="pixivModeHint">自动标签会裁到 Pixiv 当前的 10 个上限。手动投稿模式下，浏览器会停在投稿页，方便你确认首张的标题、标签和说明是否符合预期。</p>
+            <p class="support-copy field-note">LLM 模型支持从提供商自动读取 + 自定义输入两种方式；先填 Base URL 和 API Key，再点读取模型会更顺手。</p>
             <p class="support-copy">Cookie / CSRF Token 和 LLM API Key 都属于敏感凭证，只建议保存在你自己的本机配置里，不要提交到 GitHub。安全策略默认会自动升到 R-18 / R-18G，并拦截高风险未成年性化组合，喵。</p>
           </section>
         </div>
@@ -495,14 +503,3 @@
   <script src="./app.js"></script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-

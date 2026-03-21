@@ -48,7 +48,7 @@ from main import (
     normalize_upscale_engine,
     resolve_watermark_font_path,
 )
-from pixiv_llm import OpenAICompatiblePixivTagger
+from pixiv_llm import OpenAICompatiblePixivTagger, fetch_openai_compatible_models
 from pixiv_uploader import (
     PIXIV_AGE_OPTIONS,
     PIXIV_BROWSER_CHANNELS,
@@ -594,6 +594,26 @@ class WebviewBridge:
                 "ok": True,
                 "preview": preview,
                 "message": "已生成 Pixiv 投稿预览",
+            }
+        except Exception as exc:
+            return self._error_response(exc)
+
+    def fetch_pixiv_llm_models(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            pixiv_settings = self._normalize_pixiv_settings((settings or {}).get("pixiv", settings or {}))
+            if not pixiv_settings.get("llm_base_url"):
+                raise RuntimeError("请先填写 LLM Base URL")
+            items = fetch_openai_compatible_models(
+                pixiv_settings.get("llm_base_url", ""),
+                pixiv_settings.get("llm_api_key", ""),
+                timeout=min(int(pixiv_settings.get("llm_timeout", 60)), 60),
+            )
+            selected = str(pixiv_settings.get("llm_model") or "").strip()
+            return {
+                "ok": True,
+                "items": items,
+                "selected": selected,
+                "message": f"已从提供商读取 {len(items)} 个模型",
             }
         except Exception as exc:
             return self._error_response(exc)

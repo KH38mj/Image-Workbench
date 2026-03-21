@@ -18,6 +18,56 @@ DEFAULT_PIXIV_LLM_SYSTEM_PROMPT = """你是 Pixiv 标签整理助手。
 6. 只返回 JSON，格式必须是 {\"tags\":[\"女の子\",\"エルフ耳\"]}。
 """
 
+def _openai_compatible_endpoint(base_url: str, *, kind: str = "chat/completions") -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError("LLM Base URL 为空")
+
+    parsed = urlparse(base)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        root = base[: -len("/chat/completions")]
+        return f"{root}/{kind}"
+    if path.endswith("/v1"):
+        return f"{base}/{kind}"
+    if path:
+        return f"{base}/v1/{kind}"
+    return f"{base}/v1/{kind}"
+
+def fetch_openai_compatible_models(base_url: str, api_key: str = "", timeout: int = 30) -> List[Dict[str, str]]:
+    endpoint = _openai_compatible_endpoint(base_url, kind="models")
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {str(api_key).strip()}"
+
+    response = requests.get(endpoint, headers=headers, timeout=max(5, int(timeout)))
+    if response.status_code >= 400:
+        raise RuntimeError(f"读取模型列表失败（HTTP {response.status_code}）：{response.text[:300]}")
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise RuntimeError("模型列表接口返回了无法解析的 JSON") from exc
+
+    raw_items = payload.get("data") or payload.get("models") or []
+    items: List[Dict[str, str]] = []
+    seen = set()
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        model_id = str(raw.get("id") or raw.get("name") or "").strip()
+        if not model_id:
+            continue
+        lowered = model_id.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        items.append({"value": model_id, "label": model_id})
+
+    items.sort(key=lambda item: item["label"].lower())
+    return items
+
+
 
 class OpenAICompatiblePixivTagger:
     def __init__(
@@ -41,19 +91,7 @@ class OpenAICompatiblePixivTagger:
         return bool(self.base_url and self.model)
 
     def _endpoint(self) -> str:
-        base = self.base_url.rstrip("/")
-        if not base:
-            raise RuntimeError("LLM Base URL 为空")
-
-        parsed = urlparse(base)
-        path = parsed.path.rstrip("/")
-        if path.endswith("/chat/completions"):
-            return base
-        if path.endswith("/v1"):
-            return f"{base}/chat/completions"
-        if path:
-            return f"{base}/v1/chat/completions"
-        return f"{base}/v1/chat/completions"
+        return _openai_compatible_endpoint(self.base_url, kind="chat/completions")
 
     def _headers(self) -> Dict[str, str]:
         headers = {
