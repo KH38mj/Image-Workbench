@@ -404,19 +404,20 @@
               </label>
             </div>
             <div class="switch-grid">
-              <label class="switch card-switch"><input type="checkbox" id="pixivUseMetadataTags"><span>从 metadata 提取 prompt 标签</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivLlmEnabled"><span>启用 LLM 标签润色</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivIncludeLoraTags"><span>自动追加 LoRA 标签</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddOriginalTag"><span>追加原创标签</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAiGenerated"><span>标记为 AI 生成</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddUpscaleTag"><span>追加超分标签</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddEngineTag"><span>追加超分引擎标签</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddModelTag"><span>追加模型标签</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddScaleTag"><span>追加倍率标签</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivLockTags"><span>不允许其他用户编辑标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivUseMetadataTags"><span>Use metadata prompt tags</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLlmEnabled"><span>Enable LLM tag polishing</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLlmImageEnabled"><span>Enable LLM image tagging</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivIncludeLoraTags"><span>Append LoRA tags</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddOriginalTag"><span>Append original tag</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAiGenerated"><span>Mark as AI generated</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddUpscaleTag"><span>Append upscale tag</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddEngineTag"><span>Append engine tag</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddModelTag"><span>Append model tag</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddScaleTag"><span>Append scale tag</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLockTags"><span>Lock tags from other users</span></label>
             </div>
             <p class="support-copy" id="pixivModeHint">自动标签会裁到 Pixiv 当前的 10 个上限。手动投稿模式下，浏览器会停在投稿页，方便你确认首张的标题、标签和说明是否符合预期。</p>
-            <p class="support-copy field-note">LLM 模型支持从提供商自动读取 + 自定义输入两种方式；先填 Base URL 和 API Key，再点读取模型会更顺手。</p>
+            <p class="support-copy field-note">LLM models can be loaded from the provider or typed manually. Fill Base URL and API Key first, then click Load Models. If you enable image tagging, choose a vision-capable compatible model.</p>
             <p class="support-copy">Cookie / CSRF Token 和 LLM API Key 都属于敏感凭证，只建议保存在你自己的本机配置里，不要提交到 GitHub。安全策略默认会自动升到 R-18 / R-18G，并拦截高风险未成年性化组合，喵。</p>
           </section>
         </div>

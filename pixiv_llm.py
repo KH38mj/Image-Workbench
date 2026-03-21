@@ -1,9 +1,13 @@
+import base64
+import io
 import json
 import re
+from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
+from PIL import Image
 
 
 DEFAULT_PIXIV_LLM_SYSTEM_PROMPT = """你是 Pixiv 标签整理助手。
@@ -16,6 +20,18 @@ DEFAULT_PIXIV_LLM_SYSTEM_PROMPT = """你是 Pixiv 标签整理助手。
 4. 不要输出解释、序号、井号、句子。
 5. 最多输出 10 个标签。
 6. 只返回 JSON，格式必须是 {\"tags\":[\"女の子\",\"エルフ耳\"]}。
+"""
+
+DEFAULT_PIXIV_LLM_VISION_PROMPT = """你是 Pixiv 图像标签整理助手。
+任务：观察给定图片内容，输出适合 Pixiv 投稿的日文标签。
+
+规则：
+1. 只能基于图片里能明确看到的内容生成标签，不要脑补角色名、作品名或设定背景。
+2. 输出日文 Pixiv 风格标签，尽量使用简短、常见、可搜索的标签。
+3. 优先描述主体、服饰、发色、瞳色、动作、场景、构图等直接可见信息。
+4. 不要输出解释、序号、井号、句子。
+5. 最多输出 10 个标签。
+6. 只返回 JSON，格式必须是 {\"tags\":[\"女の子\",\"青い目\"]}。
 """
 
 def _openai_compatible_endpoint(base_url: str, *, kind: str = "chat/completions") -> str:
@@ -136,6 +152,22 @@ class OpenAICompatiblePixivTagger:
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"LLM 返回内容不是合法 JSON：{text[:200]}") from exc
 
+    def _image_to_data_url(self, image_path: Path, *, max_side: int = 1280, quality: int = 85) -> str:
+        path = Path(image_path)
+        if not path.exists():
+            raise RuntimeError(f"图像不存在：{path}")
+
+        with Image.open(path) as image:
+            image = image.convert("RGBA")
+            image.thumbnail((max_side, max_side))
+            canvas = Image.new("RGB", image.size, (255, 255, 255))
+            canvas.paste(image, mask=image.getchannel("A"))
+
+            buffer = io.BytesIO()
+            canvas.save(buffer, format="JPEG", quality=quality, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{encoded}"
+
     def _normalize_tags(self, values, limit: int = 10) -> List[str]:
         tags: List[str] = []
         seen = set()
@@ -197,4 +229,56 @@ class OpenAICompatiblePixivTagger:
         tags = self._normalize_tags(parsed.get("tags"), limit=limit)
         if not tags:
             raise RuntimeError("LLM 没有返回可用标签")
+        return tags
+
+    def generate_tags_from_image(self, image_path: Path, *, limit: int = 10) -> List[str]:
+        if not self.is_ready():
+            raise RuntimeError("LLM 配置不完整，需要 Base URL 和 Model")
+
+        data_url = self._image_to_data_url(Path(image_path))
+        body = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "messages": [
+                {"role": "system", "content": DEFAULT_PIXIV_LLM_VISION_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "limit": int(limit),
+                                    "target": "pixiv_japanese_tags_from_image",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_url},
+                        },
+                    ],
+                },
+            ],
+        }
+        response = requests.post(
+            self._endpoint(),
+            headers=self._headers(),
+            json=body,
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"LLM 图像打标失败（HTTP {response.status_code}）：{response.text[:300]}")
+
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError("LLM 图像打标返回了无法解析的 JSON 响应") from exc
+
+        content = self._extract_content(payload)
+        parsed = self._parse_json_text(content)
+        tags = self._normalize_tags(parsed.get("tags"), limit=limit)
+        if not tags:
+            raise RuntimeError("LLM 没有返回可用的图像标签")
         return tags

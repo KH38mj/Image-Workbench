@@ -174,6 +174,7 @@ function cacheRefs() {
     'pixivCookie',
     'pixivCsrfToken',
     'pixivLlmEnabled',
+    'pixivLlmImageEnabled',
     'pixivLlmBaseUrl',
     'pixivLlmApiKey',
     'loadPixivLlmModelsBtn',
@@ -242,6 +243,7 @@ function bindEvents() {
   refs.pixivSubmitMode.addEventListener('change', updatePixivModeHint);
   refs.pixivSafetyMode.addEventListener('change', updatePixivModeHint);
   refs.pixivLlmEnabled.addEventListener('change', syncPixivFieldState);
+  refs.pixivLlmImageEnabled.addEventListener('change', updatePixivModeHint);
   refs.pixivLlmModelPreset.addEventListener('change', syncPixivLlmModelState);
   refs.loadPixivLlmModelsBtn.addEventListener('click', onLoadPixivLlmModels);
   refs.testPixivLlmBtn.addEventListener('click', onTestPixivLlm);
@@ -722,6 +724,7 @@ function hydratePixivForm(pixiv) {
   refs.pixivCookie.value = pixiv.cookie || '';
   refs.pixivCsrfToken.value = pixiv.csrf_token || '';
   refs.pixivLlmEnabled.checked = !!pixiv.llm_enabled;
+  refs.pixivLlmImageEnabled.checked = !!pixiv.llm_image_enabled;
   refs.pixivLlmBaseUrl.value = pixiv.llm_base_url || 'https://api.openai.com/v1';
   refs.pixivLlmApiKey.value = pixiv.llm_api_key || '';
   renderPixivLlmModelOptions([]);
@@ -904,19 +907,22 @@ async function onLoadPixivLlmModels() {
 
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
-  updateStatusBadge('状态: 正在测试 Pixiv LLM');
+  updateStatusBadge('Status: testing Pixiv LLM');
   const result = await window.pywebview.api.test_pixiv_llm({ pixiv: readPixivSettings() });
   if (!result.ok) {
-    pushLog(result.error || 'Pixiv LLM 测试失败');
-    updateStatusBadge('状态: Pixiv LLM 测试失败');
+    pushLog(result.error || 'Pixiv LLM test failed');
+    updateStatusBadge('Status: Pixiv LLM test failed');
     syncPixivFieldState();
     return;
   }
 
   (result.infos || []).forEach((message) => pushLog(`[Pixiv LLM] ${message}`));
   (result.warnings || []).forEach((message) => pushLog(`[Pixiv LLM] ${message}`));
-  pushLog(`[Pixiv LLM] 测试标签：${(result.tags || []).join(', ')}`);
-  updateStatusBadge(`状态: ${result.message}`);
+  pushLog(`[Pixiv LLM] metadata tags: ${(result.tags || []).join(', ')}`);
+  if ((result.imageTags || []).length) {
+    pushLog(`[Pixiv LLM] image tags: ${result.imageTags.join(', ')}`);
+  }
+  updateStatusBadge(`Status: ${result.message}`);
   syncPixivFieldState();
 }
 
@@ -1043,6 +1049,7 @@ function readPixivSettings() {
     cookie: refs.pixivCookie.value.trim(),
     csrf_token: refs.pixivCsrfToken.value.trim(),
     llm_enabled: refs.pixivLlmEnabled.checked,
+    llm_image_enabled: refs.pixivLlmImageEnabled.checked,
     llm_base_url: refs.pixivLlmBaseUrl.value.trim(),
     llm_api_key: refs.pixivLlmApiKey.value.trim(),
     llm_model: getActivePixivLlmModelValue(),
@@ -1067,20 +1074,24 @@ function updatePixivModeHint() {
   const enabled = refs.pixivEnabled.checked;
   const directMode = refs.pixivUploadMode.value === 'direct';
   const llmEnabled = refs.pixivLlmEnabled.checked;
+  const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
   if (!enabled) {
-    refs.pixivModeHint.textContent = '自动标签会裁到 Pixiv 当前的 10 个上限。启用后再决定是走浏览器确认，还是直接用 Cookie + CSRF 直传。';
+    refs.pixivModeHint.textContent = 'Pixiv tags are still limited to 10 total. Enable upload first, then choose browser mode or Cookie + CSRF direct upload.';
     return;
   }
   let message = directMode
-    ? '当前是 Cookie + CSRF 直传模式，会直接向 Pixiv 提交请求；即使你选了手动确认，也不会停留在网页投稿页。'
-    : '当前是浏览器自动填写模式。手动投稿时，浏览器会停在投稿页，方便你确认首张的标题、标签和说明是否符合预期。';
+    ? 'Current mode: Cookie + CSRF direct upload. Submission goes straight to Pixiv and will not stop on the web form, even if manual confirm is selected.'
+    : 'Current mode: browser autofill. In manual submit mode, the browser will stay on the Pixiv form so you can review title, tags, and caption first.';
   if (llmEnabled) {
-    message += ' 当前还启用了 LLM 标签润色，metadata 提示词会先送去 OpenAI-compatible 接口整理成 Pixiv 风格标签。';
+    message += ' Metadata prompt tags will be sent to your OpenAI-compatible endpoint and normalized into Pixiv-style tags.';
+  }
+  if (llmEnabled && llmImageEnabled) {
+    message += ' The upload image itself will also be sent to a vision-capable compatible model, then merged with manual tags, metadata tags, LoRA tags, and workflow tags.';
   }
   if (refs.pixivSafetyMode.value === 'strict') {
-    message += ' 目前启用了严格拦截，命中 NSFW 或幼态高风险标签时不会自动投稿。';
+    message += ' Strict safety mode is on, so risky NSFW or minor-coded tag combinations will block auto submission.';
   } else if (refs.pixivSafetyMode.value === 'auto') {
-    message += ' 目前启用了自动安全护栏，命中成人/猎奇标签会自动提升到 R-18 / R-18G，并拦截高风险未成年性化组合。';
+    message += ' Auto safety mode is on, so adult or graphic tags can promote the rating to R-18 / R-18G and block high-risk combinations.';
   }
   refs.pixivModeHint.textContent = message;
 }
@@ -1089,6 +1100,7 @@ function syncPixivFieldState() {
   const enabled = refs.pixivEnabled.checked;
   const directMode = refs.pixivUploadMode.value === 'direct';
   const llmEnabled = refs.pixivLlmEnabled.checked;
+  const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
   [
     refs.pixivUploadMode,
     refs.pixivVisibility,
@@ -1097,6 +1109,7 @@ function syncPixivFieldState() {
     refs.pixivTagLanguage,
     refs.pixivSafetyMode,
     refs.pixivLlmEnabled,
+    refs.pixivLlmImageEnabled,
     refs.pixivTitleTemplate,
     refs.pixivTags,
     refs.pixivCaption,
@@ -1117,6 +1130,7 @@ function syncPixivFieldState() {
   refs.browsePixivProfileBtn.disabled = !enabled || directMode;
   refs.pixivCookie.disabled = !enabled || !directMode;
   refs.pixivCsrfToken.disabled = !enabled || !directMode;
+  refs.pixivLlmImageEnabled.disabled = !enabled || !llmEnabled;
   refs.pixivLlmBaseUrl.disabled = !enabled || !llmEnabled;
   refs.pixivLlmApiKey.disabled = !enabled || !llmEnabled;
   syncPixivLlmModelState();
