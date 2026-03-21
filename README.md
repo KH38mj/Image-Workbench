@@ -69,8 +69,8 @@ pip install -r requirements.txt
 如果你是第一次把仓库拉到本地，推荐直接走这套：
 
 ```powershell
-git clone https://github.com/KH38mj/picture.git
-cd picture
+git clone https://github.com/KH38mj/Image-Workbench.git
+cd Image-Workbench
 py -3.12 -m venv .venv312
 .venv312\Scripts\python.exe -m pip install -U pip
 .venv312\Scripts\python.exe -m pip install -r requirements.txt
@@ -85,7 +85,6 @@ start_webview.bat
 说明：
 
 - `requirements.txt` 已经包含 `pywebview`
-- 上面的仓库地址和目录名目前仍然是 `picture`，因为 GitHub 仓库还没实际改名
 - 模型权重、Pixiv 凭证、本地字体等不会跟仓库一起下，需要你自己按需准备
 - 如果只想先试基础功能，先不配 Pixiv 和 GPU 超分也能跑
 
