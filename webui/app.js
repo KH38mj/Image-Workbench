@@ -1215,7 +1215,7 @@ function onSourceMouseDown(event) {
   state.dragging = true;
   state.dragStart = clampToRect(event.clientX, event.clientY, metrics.rect);
   refs.dragSelection.classList.remove('hidden');
-  setDragSelection(state.dragStart.x, state.dragStart.y, state.dragStart.x, state.dragStart.y, metrics.rect);
+  setDragSelection(state.dragStart.x, state.dragStart.y, state.dragStart.x, state.dragStart.y, metrics);
 }
 
 function onSourceMouseMove(event) {
@@ -1228,7 +1228,7 @@ function onSourceMouseMove(event) {
     return;
   }
   const current = clampToRect(event.clientX, event.clientY, metrics.rect);
-  setDragSelection(state.dragStart.x, state.dragStart.y, current.x, current.y, metrics.rect);
+  setDragSelection(state.dragStart.x, state.dragStart.y, current.x, current.y, metrics);
 }
 
 function onSourceMouseUp(event) {
@@ -1259,9 +1259,9 @@ function onSourceMouseUp(event) {
   pushLog(`添加选区: (${region.join(', ')})`);
 }
 
-function setDragSelection(x1, y1, x2, y2, rect) {
-  const left = Math.min(x1, x2) - rect.left;
-  const top = Math.min(y1, y2) - rect.top;
+function setDragSelection(x1, y1, x2, y2, metrics) {
+  const left = Math.min(x1, x2) - metrics.stageRect.left;
+  const top = Math.min(y1, y2) - metrics.stageRect.top;
   const width = Math.abs(x2 - x1);
   const height = Math.abs(y2 - y1);
   refs.dragSelection.style.left = `${left}px`;
@@ -1326,15 +1326,15 @@ function imageMetrics() {
   }
 
   const imgRect = refs.sourceImage.getBoundingClientRect();
-  const layerRect = refs.selectionLayer.getBoundingClientRect();
-  refs.selectionLayer.style.left = `${imgRect.left - layerRect.left}px`;
-  refs.selectionLayer.style.top = `${imgRect.top - layerRect.top}px`;
+  const stageRect = refs.sourceStage.getBoundingClientRect();
+  refs.selectionLayer.style.left = `${imgRect.left - stageRect.left}px`;
+  refs.selectionLayer.style.top = `${imgRect.top - stageRect.top}px`;
   refs.selectionLayer.style.width = `${imgRect.width}px`;
   refs.selectionLayer.style.height = `${imgRect.height}px`;
-  refs.dragSelection.style.left = '0px';
-  refs.dragSelection.style.top = '0px';
+  refs.dragSelection.style.left = `${imgRect.left - stageRect.left}px`;
+  refs.dragSelection.style.top = `${imgRect.top - stageRect.top}px`;
 
-  return { rect: imgRect };
+  return { rect: imgRect, stageRect };
 }
 
 function rectToImageRegion(start, end, metrics) {
@@ -1557,6 +1557,7 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
 }
+
 
 
 

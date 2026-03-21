@@ -818,7 +818,10 @@ kbd {
 
 #selectionLayer {
   position: absolute;
-  inset: 18px;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
   pointer-events: none;
 }
 
@@ -976,6 +979,7 @@ kbd {
     align-items: stretch;
   }
 }
+
 
 
 

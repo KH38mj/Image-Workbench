@@ -227,16 +227,18 @@ def get_dragon_icon_path() -> Optional[Path]:
 
 
 def svg_to_png(svg_path: Path, size: Tuple[int, int]) -> Optional[Image.Image]:
-    """灏?SVG 杞崲涓?PNG"""
+    """Render the SVG icon to a PNG image, falling back gracefully when Cairo is unavailable."""
     try:
         import cairosvg
         png_data = cairosvg.svg2png(url=str(svg_path), output_width=size[0], output_height=size[1])
         return Image.open(io.BytesIO(png_data))
     except ImportError:
-        # 娌℃湁 cairosvg 鏃讹紝浣跨敤澶囩敤鏂规锛氭覆鏌?emoji
         return render_emoji_dragon(size)
     except Exception as e:
-        print(f"[璀﹀憡] SVG 杞崲澶辫触: {e}")
+        try:
+            print(f"[WARN] SVG icon fallback: {e}")
+        except Exception:
+            print("[WARN] SVG icon fallback")
         return render_emoji_dragon(size)
 
 
@@ -344,15 +346,11 @@ class WatermarkProcessor:
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
 
-        # 鍑嗗鍥炬爣
-        icon_size = int(font_size * config.get('icon_scale', 0.8))
-        dragon_icon = create_dragon_icon(icon_size)
+        # 纯文字水印：不再尝试加载龙图标，避免 Cairo / emoji 环境差异影响主功能
+        total_width = text_width
+        total_height = text_height
 
-        # 璁＄畻姘村嵃鏁翠綋灏哄
-        total_width = text_width + (icon_size if dragon_icon else 0) + 10  # 10px 闂磋窛
-        total_height = max(text_height, icon_size if dragon_icon else 0)
-
-        # 璁＄畻鍩虹浣嶇疆
+        # 计算基础位置
         margin = config['margin']
         position = config['position']
 
@@ -372,31 +370,20 @@ class WatermarkProcessor:
             base_x = img_width - total_width - margin
             base_y = img_height - total_height - margin
 
-        # 娣诲姞闅忔満鍋忕Щ
+        # 添加随机偏移
         offset_range = config.get('offset_range', [-15, 15])
         offset_x = random.randint(offset_range[0], offset_range[1])
         offset_y = random.randint(offset_range[0], offset_range[1])
         final_x = max(0, min(img_width - total_width, base_x + offset_x))
         final_y = max(0, min(img_height - total_height, base_y + offset_y))
 
-        # 鍒涘缓姘村嵃灞?
+        # 创建水印层
         watermark = Image.new('RGBA', img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(watermark)
 
-        # 缁樺埗鏂囧瓧
+        # 绘制文字
         color = tuple(config['color']) + (int(255 * config['opacity']),)
         draw.text((final_x, final_y), text, font=font, fill=color)
-
-        # 缁樺埗鍥炬爣
-        if dragon_icon:
-            icon_x = final_x + text_width + 10
-            icon_y = final_y + (text_height - icon_size) // 2
-            # 璋冩暣鍥炬爣閫忔槑搴?
-            if dragon_icon.mode == 'RGBA':
-                alpha = dragon_icon.split()[3]
-                alpha = alpha.point(lambda p: int(p * config['opacity']))
-                dragon_icon.putalpha(alpha)
-            watermark.paste(dragon_icon, (icon_x, icon_y), dragon_icon)
 
         # 鏃嬭浆
         rotation_range = config.get('rotation_range', [-10, 10])
@@ -1420,4 +1407,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
