@@ -6,6 +6,7 @@ PyWebView frontend for the image processor workbench.
 from __future__ import annotations
 
 import base64
+import ctypes
 import io
 import json
 import re
@@ -20,6 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
+
+from ctypes import wintypes
 
 from PIL import Image, ImageOps
 
@@ -67,6 +70,7 @@ BASE_DIR = Path(__file__).parent
 WEBUI_DIR = BASE_DIR / "webui"
 CONFIG_PATH = BASE_DIR / "webview_config.json"
 BOOT_LOG_PATH = BASE_DIR / "webview_boot.log"
+PIXIV_LLM_API_KEY_CRED_TARGET = "ImageWorkbench/Pixiv/LLMApiKey"
 IMAGE_FILTER = "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp)"
 WEIGHT_FILTER = "PyTorch Weights (*.pth)"
 FONT_FILTER = "Fonts (*.ttf;*.otf;*.ttc)"
@@ -263,6 +267,7 @@ PIXIV_DEFAULTS = {
     "llm_image_enabled": False,
     "llm_base_url": "https://api.openai.com/v1",
     "llm_api_key": "",
+    "remember_llm_api_key": False,
     "llm_model": "",
     "llm_temperature": 0.1,
     "llm_timeout": 60,
@@ -286,6 +291,110 @@ PIXIV_DEFAULTS = {
     "auto_submit": True,
     "lock_tags": False,
 }
+
+
+if sys.platform == "win32":
+    LPBYTE = ctypes.POINTER(wintypes.BYTE)
+
+    class FILETIME(ctypes.Structure):
+        _fields_ = [
+            ("dwLowDateTime", wintypes.DWORD),
+            ("dwHighDateTime", wintypes.DWORD),
+        ]
+
+
+    class CREDENTIAL_ATTRIBUTEW(ctypes.Structure):
+        _fields_ = [
+            ("Keyword", wintypes.LPWSTR),
+            ("Flags", wintypes.DWORD),
+            ("ValueSize", wintypes.DWORD),
+            ("Value", LPBYTE),
+        ]
+
+
+    class CREDENTIALW(ctypes.Structure):
+        _fields_ = [
+            ("Flags", wintypes.DWORD),
+            ("Type", wintypes.DWORD),
+            ("TargetName", wintypes.LPWSTR),
+            ("Comment", wintypes.LPWSTR),
+            ("LastWritten", FILETIME),
+            ("CredentialBlobSize", wintypes.DWORD),
+            ("CredentialBlob", LPBYTE),
+            ("Persist", wintypes.DWORD),
+            ("AttributeCount", wintypes.DWORD),
+            ("Attributes", ctypes.POINTER(CREDENTIAL_ATTRIBUTEW)),
+            ("TargetAlias", wintypes.LPWSTR),
+            ("UserName", wintypes.LPWSTR),
+        ]
+
+
+    PCREDENTIALW = ctypes.POINTER(CREDENTIALW)
+    _advapi32 = ctypes.WinDLL("Advapi32", use_last_error=True)
+    _cred_read = _advapi32.CredReadW
+    _cred_read.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(PCREDENTIALW)]
+    _cred_read.restype = wintypes.BOOL
+    _cred_write = _advapi32.CredWriteW
+    _cred_write.argtypes = [ctypes.POINTER(CREDENTIALW), wintypes.DWORD]
+    _cred_write.restype = wintypes.BOOL
+    _cred_delete = _advapi32.CredDeleteW
+    _cred_delete.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
+    _cred_delete.restype = wintypes.BOOL
+    _cred_free = _advapi32.CredFree
+    _cred_free.argtypes = [ctypes.c_void_p]
+    _cred_free.restype = None
+
+    CRED_TYPE_GENERIC = 1
+    CRED_PERSIST_LOCAL_MACHINE = 2
+    ERROR_NOT_FOUND = 1168
+
+
+def _is_windows_credential_supported() -> bool:
+    return sys.platform == "win32"
+
+
+def _read_windows_credential(target_name: str) -> str:
+    if not _is_windows_credential_supported():
+        return ""
+    cred_ptr = PCREDENTIALW()
+    if not _cred_read(target_name, CRED_TYPE_GENERIC, 0, ctypes.byref(cred_ptr)):
+        error = ctypes.get_last_error()
+        if error == ERROR_NOT_FOUND:
+            return ""
+        raise ctypes.WinError(error)
+    try:
+        cred = cred_ptr.contents
+        if not cred.CredentialBlob or cred.CredentialBlobSize <= 0:
+            return ""
+        blob = ctypes.string_at(cred.CredentialBlob, cred.CredentialBlobSize)
+        return blob.decode("utf-16-le")
+    finally:
+        _cred_free(cred_ptr)
+
+
+def _write_windows_credential(target_name: str, secret: str) -> None:
+    if not _is_windows_credential_supported():
+        raise RuntimeError("当前平台不支持 Windows 凭据管理器")
+    secret_bytes = secret.encode("utf-16-le")
+    blob = ctypes.create_string_buffer(secret_bytes)
+    credential = CREDENTIALW()
+    credential.Type = CRED_TYPE_GENERIC
+    credential.TargetName = target_name
+    credential.CredentialBlobSize = len(secret_bytes)
+    credential.CredentialBlob = ctypes.cast(blob, LPBYTE)
+    credential.Persist = CRED_PERSIST_LOCAL_MACHINE
+    credential.UserName = "Image Workbench"
+    if not _cred_write(ctypes.byref(credential), 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _delete_windows_credential(target_name: str) -> None:
+    if not _is_windows_credential_supported():
+        return
+    if not _cred_delete(target_name, CRED_TYPE_GENERIC, 0):
+        error = ctypes.get_last_error()
+        if error != ERROR_NOT_FOUND:
+            raise ctypes.WinError(error)
 
 
 def _resampling() -> int:
@@ -318,6 +427,7 @@ class WebviewBridge:
         self._batch_thread: Optional[threading.Thread] = None
         self._batch_job_counter = 0
         self._pixiv_llm_cache: Dict[str, List[str]] = {}
+        self._hydrate_stored_llm_api_key()
 
         if self._loaded_sensitive_config:
             self._save_config()
@@ -349,6 +459,7 @@ class WebviewBridge:
                 "pixivUploadModeOptions": PIXIV_UPLOAD_MODE_OPTIONS,
                 "pixivTagLanguageOptions": PIXIV_TAG_LANGUAGE_OPTIONS,
                 "pixivSafetyModeOptions": PIXIV_SAFETY_MODE_OPTIONS,
+                "supportsCredentialStorage": _is_windows_credential_supported(),
                 "source": None,
                 "preview": None,
                 "recentImages": self._recent_image_items(),
@@ -587,6 +698,7 @@ class WebviewBridge:
                 normalized = self._normalize_settings(settings)
                 batch_settings = self._normalize_batch_settings((settings or {}).get("batch", {}))
                 pixiv_settings = self._normalize_pixiv_settings((settings or {}).get("pixiv", {}))
+                self._sync_stored_llm_api_key(pixiv_settings)
                 self._config.update(normalized)
                 self._config["last_input_dir"] = batch_settings.get("input_dir", "")
                 self._config["last_output_dir"] = batch_settings.get("output_dir", "")
@@ -651,12 +763,29 @@ class WebviewBridge:
             info_messages: List[str] = []
             warning_messages: List[str] = []
             sample_tags = ["1girl", "elf ears", "blue eyes", "solo", "long hair", "fantasy"]
+            metadata_tags: List[str] = []
             image_tags: List[str] = []
+            current_image = None
+            with self._lock:
+                if self._current_image_path and self._current_image_path.exists():
+                    current_image = Path(self._current_image_path)
+
+            if pixiv_settings.get("use_metadata_tags", True):
+                if current_image:
+                    prompt_tags, _ = self._extract_metadata_tags(current_image)
+                    metadata_tags.extend(prompt_tags)
+                    if metadata_tags:
+                        info_messages.append(f"已从当前图片 metadata 中提取 {len(metadata_tags)} 个测试标签。")
+                    else:
+                        warning_messages.append("当前图片没有可用 metadata 标签，综合整理测试将回退到样例 metadata 标签。")
+                else:
+                    warning_messages.append("当前还没有加载图片，综合整理测试将回退到样例 metadata 标签。")
+                if not metadata_tags:
+                    metadata_tags = sample_tags.copy()
+            else:
+                info_messages.append("当前已关闭 metadata 标签提取，本次综合整理测试不会使用 metadata 标签。")
+
             if pixiv_settings.get("llm_image_enabled", False):
-                current_image = None
-                with self._lock:
-                    if self._current_image_path and self._current_image_path.exists():
-                        current_image = Path(self._current_image_path)
                 if current_image:
                     image_tags = self._generate_llm_pixiv_image_tags(
                         current_image,
@@ -668,7 +797,7 @@ class WebviewBridge:
                 else:
                     warning_messages.append("已启用 LLM 看图打标，但当前还没有加载图片，已跳过图像测试。")
             llm_tags = self._generate_llm_pixiv_tags(
-                sample_tags,
+                metadata_tags,
                 pixiv_settings,
                 image_tags=image_tags,
                 info_messages=info_messages,
@@ -680,6 +809,7 @@ class WebviewBridge:
             return {
                 "ok": True,
                 "tags": llm_tags,
+                "metadataTags": metadata_tags,
                 "imageTags": image_tags,
                 "infos": info_messages,
                 "warnings": warning_messages,
@@ -1246,6 +1376,33 @@ class WebviewBridge:
                 persisted["pixiv"][field] = ""
         CONFIG_PATH.write_text(json.dumps(persisted, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _hydrate_stored_llm_api_key(self) -> None:
+        pixiv_settings = self._config.get("pixiv", {})
+        if not isinstance(pixiv_settings, dict):
+            return
+        if not pixiv_settings.get("remember_llm_api_key", False):
+            return
+        try:
+            stored_key = _read_windows_credential(PIXIV_LLM_API_KEY_CRED_TARGET)
+        except Exception:
+            stored_key = ""
+        if stored_key:
+            pixiv_settings["llm_api_key"] = stored_key
+            self._session_pixiv_secrets["llm_api_key"] = stored_key
+
+    def _sync_stored_llm_api_key(self, pixiv_settings: Dict[str, Any]) -> None:
+        remember = bool(pixiv_settings.get("remember_llm_api_key", False))
+        api_key = str(pixiv_settings.get("llm_api_key") or "").strip()
+        if remember:
+            if not _is_windows_credential_supported():
+                raise RuntimeError("当前环境不支持 Windows 凭据管理器，无法记住 API Key")
+            if api_key:
+                _write_windows_credential(PIXIV_LLM_API_KEY_CRED_TARGET, api_key)
+            else:
+                _delete_windows_credential(PIXIV_LLM_API_KEY_CRED_TARGET)
+        else:
+            _delete_windows_credential(PIXIV_LLM_API_KEY_CRED_TARGET)
+
     def _normalize_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         settings = settings or {}
         watermark = settings.get("watermark", {})
@@ -1314,6 +1471,7 @@ class WebviewBridge:
         merged["csrf_token"] = str(merged.get("csrf_token") or "").strip()
         merged["llm_base_url"] = str(merged.get("llm_base_url") or "https://api.openai.com/v1").strip()
         merged["llm_api_key"] = str(merged.get("llm_api_key") or "").strip()
+        merged["remember_llm_api_key"] = bool(merged.get("remember_llm_api_key", PIXIV_DEFAULTS["remember_llm_api_key"]))
         merged["llm_model"] = str(merged.get("llm_model") or "").strip()
         merged["llm_metadata_prompt"] = str(merged.get("llm_metadata_prompt") or "").strip()
         merged["llm_image_prompt"] = str(merged.get("llm_image_prompt") or "").strip()
@@ -1352,6 +1510,7 @@ class WebviewBridge:
             "lock_tags",
             "llm_enabled",
             "llm_image_enabled",
+            "remember_llm_api_key",
         ):
             merged[key] = bool(merged.get(key, PIXIV_DEFAULTS[key]))
         for field in PIXIV_SENSITIVE_FIELDS:

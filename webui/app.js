@@ -180,6 +180,7 @@ function cacheRefs() {
     'pixivLlmImageEnabled',
     'pixivLlmBaseUrl',
     'pixivLlmApiKey',
+    'pixivRememberLlmApiKey',
     'loadPixivLlmModelsBtn',
     'testPixivLlmBtn',
     'pixivLlmModelPreset',
@@ -316,6 +317,7 @@ function bindSettingsAutosave() {
     refs.pixivLlmImageEnabled,
     refs.pixivLlmBaseUrl,
     refs.pixivLlmApiKey,
+    refs.pixivRememberLlmApiKey,
     refs.pixivLlmModelPreset,
     refs.pixivLlmModelCustom,
     refs.pixivLlmTemperature,
@@ -835,6 +837,7 @@ function hydratePixivForm(pixiv) {
   refs.pixivLlmImageEnabled.checked = !!pixiv.llm_image_enabled;
   refs.pixivLlmBaseUrl.value = pixiv.llm_base_url || 'https://api.openai.com/v1';
   refs.pixivLlmApiKey.value = pixiv.llm_api_key || '';
+  refs.pixivRememberLlmApiKey.checked = !!pixiv.remember_llm_api_key;
   renderPixivLlmModelOptions([]);
   applyPixivLlmModelSelection(pixiv.llm_model || '');
   refs.pixivLlmTemperature.value = String(pixiv.llm_temperature ?? 0.1);
@@ -1017,22 +1020,25 @@ async function onLoadPixivLlmModels() {
 
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
-  updateStatusBadge('状态: 正在测试 Pixiv LLM');
+  updateStatusBadge('Status: Testing Pixiv LLM');
   const result = await window.pywebview.api.test_pixiv_llm({ pixiv: readPixivSettings() });
   if (!result.ok) {
-    pushLog(result.error || 'Pixiv LLM 测试失败');
-    updateStatusBadge('状态: Pixiv LLM 测试失败');
+    pushLog(result.error || 'Pixiv LLM test failed');
+    updateStatusBadge('Status: Pixiv LLM test failed');
     syncPixivFieldState();
     return;
   }
 
   (result.infos || []).forEach((message) => pushLog(`[Pixiv LLM] ${message}`));
   (result.warnings || []).forEach((message) => pushLog(`[Pixiv LLM] ${message}`));
-  pushLog(`[Pixiv LLM] 综合标签: ${(result.tags || []).join(', ')}`);
-  if ((result.imageTags || []).length) {
-    pushLog(`[Pixiv LLM] 看图标签: ${result.imageTags.join(', ')}`);
+  if ((result.metadataTags || []).length) {
+    pushLog(`[Pixiv LLM] Metadata tags: ${result.metadataTags.join(', ')}`);
   }
-  updateStatusBadge(`状态: ${result.message}`);
+  if ((result.imageTags || []).length) {
+    pushLog(`[Pixiv LLM] Image tags: ${result.imageTags.join(', ')}`);
+  }
+  pushLog(`[Pixiv LLM] Combined tags: ${(result.tags || []).join(', ')}`);
+  updateStatusBadge(`Status: ${result.message}`);
   syncPixivFieldState();
 }
 
@@ -1162,6 +1168,7 @@ function readPixivSettings() {
     llm_image_enabled: refs.pixivLlmImageEnabled.checked,
     llm_base_url: refs.pixivLlmBaseUrl.value.trim(),
     llm_api_key: refs.pixivLlmApiKey.value.trim(),
+    remember_llm_api_key: refs.pixivRememberLlmApiKey.checked,
     llm_model: getActivePixivLlmModelValue(),
     llm_temperature: Number.parseFloat(refs.pixivLlmTemperature.value || '0.1'),
     llm_timeout: Number.parseInt(refs.pixivLlmTimeout.value || '60', 10),
@@ -1212,6 +1219,7 @@ function syncPixivFieldState() {
   const directMode = refs.pixivUploadMode.value === 'direct';
   const llmEnabled = refs.pixivLlmEnabled.checked;
   const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
+  const credentialSupported = state.bootstrap?.supportsCredentialStorage !== false;
   [
     refs.pixivUploadMode,
     refs.pixivVisibility,
@@ -1244,6 +1252,8 @@ function syncPixivFieldState() {
   refs.pixivLlmImageEnabled.disabled = !enabled || !llmEnabled;
   refs.pixivLlmBaseUrl.disabled = !enabled || !llmEnabled;
   refs.pixivLlmApiKey.disabled = !enabled || !llmEnabled;
+  refs.pixivRememberLlmApiKey.disabled = !enabled || !llmEnabled || !credentialSupported;
+  refs.pixivRememberLlmApiKey.title = credentialSupported ? '' : 'Windows Credential Manager is not available in this environment';
   syncPixivLlmModelState();
   refs.pixivLlmTemperature.disabled = !enabled || !llmEnabled;
   refs.pixivLlmTimeout.disabled = !enabled || !llmEnabled;
