@@ -632,15 +632,6 @@ class WebviewBridge:
             info_messages: List[str] = []
             warning_messages: List[str] = []
             sample_tags = ["1girl", "elf ears", "blue eyes", "solo", "long hair", "fantasy"]
-            llm_tags = self._generate_llm_pixiv_tags(
-                sample_tags,
-                pixiv_settings,
-                info_messages=info_messages,
-                warning_messages=warning_messages,
-                use_cache=False,
-            )
-            if not llm_tags:
-                raise RuntimeError("LLM 没有返回测试标签，请检查模型输出格式")
             image_tags: List[str] = []
             if pixiv_settings.get("llm_image_enabled", False):
                 current_image = None
@@ -656,14 +647,24 @@ class WebviewBridge:
                         use_cache=False,
                     )
                 else:
-                    warning_messages.append("已启用 LLM 看图打标，但当前还没有加载图片，已跳过图像测试。")
+                    warning_messages.append("??? LLM ????????????????????????")
+            llm_tags = self._generate_llm_pixiv_tags(
+                sample_tags,
+                pixiv_settings,
+                image_tags=image_tags,
+                info_messages=info_messages,
+                warning_messages=warning_messages,
+                use_cache=False,
+            )
+            if not llm_tags:
+                raise RuntimeError("LLM ??????????????????")
             return {
                 "ok": True,
                 "tags": llm_tags,
                 "imageTags": image_tags,
                 "infos": info_messages,
                 "warnings": warning_messages,
-                "message": "LLM 连接成功，已生成 Pixiv 风格测试标签",
+                "message": "LLM ???????? Pixiv ??????",
             }
         except Exception as exc:
             return self._error_response(exc)
@@ -1481,11 +1482,12 @@ class WebviewBridge:
 
         return prompt_tags, lora_tags
 
-    def _pixiv_llm_cache_key(self, metadata_tags: List[str], pixiv_settings: Dict[str, Any]) -> str:
+    def _pixiv_llm_cache_key(self, metadata_tags: List[str], pixiv_settings: Dict[str, Any], image_tags: Optional[List[str]] = None) -> str:
         return json.dumps(
             {
                 "kind": "metadata",
                 "metadata_tags": metadata_tags,
+                "image_tags": image_tags or [],
                 "base_url": pixiv_settings.get("llm_base_url", ""),
                 "model": pixiv_settings.get("llm_model", ""),
                 "temperature": pixiv_settings.get("llm_temperature", 0.1),
@@ -1520,6 +1522,7 @@ class WebviewBridge:
         self,
         metadata_tags: List[str],
         pixiv_settings: Dict[str, Any],
+        image_tags: Optional[List[str]] = None,
         *,
         info_messages: Optional[List[str]] = None,
         warning_messages: Optional[List[str]] = None,
@@ -1527,7 +1530,7 @@ class WebviewBridge:
     ) -> List[str]:
         if not pixiv_settings.get("llm_enabled", False):
             return []
-        if not metadata_tags:
+        if not metadata_tags and not image_tags:
             return []
 
         if not pixiv_settings.get("llm_base_url"):
@@ -1539,7 +1542,7 @@ class WebviewBridge:
                 warning_messages.append("LLM 标签润色已启用，但 Model 为空，已回退到本地规则。")
             return []
 
-        cache_key = self._pixiv_llm_cache_key(metadata_tags, pixiv_settings)
+        cache_key = self._pixiv_llm_cache_key(metadata_tags, pixiv_settings, image_tags=image_tags)
         if use_cache and cache_key in self._pixiv_llm_cache:
             cached = list(self._pixiv_llm_cache[cache_key])
             if info_messages is not None:
@@ -1556,11 +1559,14 @@ class WebviewBridge:
                 system_prompt=pixiv_settings.get("llm_metadata_prompt", "") or None,
                 vision_system_prompt=pixiv_settings.get("llm_image_prompt", "") or None,
             )
-            llm_tags = tagger.generate_tags(metadata_tags, limit=PIXIV_TAG_LIMIT)
+            llm_tags = tagger.generate_tags(metadata_tags, image_tags=image_tags, limit=PIXIV_TAG_LIMIT)
             if use_cache:
                 self._pixiv_llm_cache[cache_key] = list(llm_tags)
             if info_messages is not None:
-                info_messages.append(f"LLM 已将 metadata 提示词整理为 {len(llm_tags)} 个 Pixiv 标签。")
+                if image_tags:
+                    info_messages.append(f"LLM ??? metadata ???????? {len(llm_tags)} ? Pixiv ???")
+                else:
+                    info_messages.append(f"LLM ?? metadata ?????? {len(llm_tags)} ? Pixiv ???")
             return llm_tags
         except Exception as exc:
             if warning_messages is not None:
@@ -1750,6 +1756,7 @@ class WebviewBridge:
         llm_metadata_tags = self._generate_llm_pixiv_tags(
             metadata_tags,
             pixiv_settings,
+            image_tags=llm_image_tags,
             info_messages=info_messages,
             warning_messages=warning_messages,
         )
@@ -1798,6 +1805,9 @@ class WebviewBridge:
             if len(unique_tags) >= PIXIV_TAG_LIMIT:
                 return unique_tags[:PIXIV_TAG_LIMIT]
         else:
+            self._append_unique_tags(unique_tags, seen, llm_image_tags)
+            if len(unique_tags) >= PIXIV_TAG_LIMIT:
+                return unique_tags[:PIXIV_TAG_LIMIT]
             for tag in metadata_tags:
                 self._append_unique_tags(unique_tags, seen, self._localize_pixiv_tag(tag, strategy))
                 if len(unique_tags) >= PIXIV_TAG_LIMIT:
