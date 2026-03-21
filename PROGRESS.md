@@ -460,3 +460,8 @@ ode --check and verified webview_app.py syntax with py_compile.
 - 重写 `README.md`，整理为更适合 GitHub 首页阅读的结构，包含项目概览、功能清单、环境要求、快速开始、超分说明、Pixiv 功能、安全说明与测试说明。
 - 明确标注推荐使用 `pywebview` 前端、CLI 示例、Pixiv 直传与 LLM 标签润色能力，以及敏感凭证不会持久化落盘的安全行为。
 - 将本次 README 整理作为提交 `41fc058`（`Polish README for GitHub`）推送到远端 `origin/main`。
+## 2026-03-21 进展记录（MIT License）
+
+- 新增标准 `MIT` 许可证文件 `LICENSE`。
+- 当前仓库的开源授权正式明确为 `MIT`，便于 GitHub 页面正确识别。
+- 许可证选择仅覆盖当前仓库中你有权授权的代码与内容；第三方依赖、模型、字体与外部资源仍以各自原始许可证为准。
