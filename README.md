@@ -1,8 +1,18 @@
 # Image Workbench
 
+[![Platform](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![Python](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 一个偏本地工作流的 AI 图片后处理工具，支持水印、打码、超分、批处理，以及 Pixiv 投稿辅助。
 
 当前项目以 Windows 桌面使用为主，推荐优先使用 `pywebview` 新前端。
+
+## 适合谁
+
+- 想给 AI 出图快速加水印、打码、做超分的人
+- 想把单图处理和批处理放在一个桌面工作台里的人
+- 想把 metadata、标签整理和 Pixiv 投稿辅助串起来的人
 
 ## 主要功能
 
