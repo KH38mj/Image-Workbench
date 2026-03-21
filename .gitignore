@@ -1,0 +1,32 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtual environments and tool caches
+.venv/
+.venv312/
+.uv-cache/
+.uv-python/
+
+# Local app state, logs, and secrets
+webview_config.json
+webview_boot.log
+.pixiv_profile/
+*.log
+
+# Downloaded model weights
+models/
+
+# Temporary repos and scratch data
+.tmp_repo_ANR/
+.tmp_repo_SANP/
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

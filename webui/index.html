@@ -1,0 +1,508 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image Workbench</title>
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <div class="startup-overlay" id="startupOverlay">
+    <div class="startup-card">
+      <div class="startup-spinner" aria-hidden="true"></div>
+      <strong id="startupTitle">正在连接桌面工作台</strong>
+      <p id="startupMessage">第一次启动时会稍慢一点，正在等待前端和 Python 桥接就绪。</p>
+    </div>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="eyebrow">PyWebView Frontend</div>
+        <h1>Image Workbench</h1>
+        <p>把单图处理、批量跑图和 Pixiv 投稿放到一套工作台里，尽量少跳窗、少切界面。</p>
+      </div>
+
+      <div class="sidebar-tabbar" id="sidebarTabbar" role="tablist" aria-label="功能分页">
+        <button class="sidebar-tab is-active" type="button" data-page="file" role="tab" aria-selected="true">文件</button>
+        <button class="sidebar-tab" type="button" data-page="edit" role="tab" aria-selected="false">编辑</button>
+        <button class="sidebar-tab" type="button" data-page="publish" role="tab" aria-selected="false">发布</button>
+      </div>
+
+      <div class="sidebar-pages">
+        <div class="sidebar-page is-active" data-page="file">
+          <section class="panel compact">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Source</span>
+                <h2>当前图片</h2>
+              </div>
+              <button id="openImageBtn" class="button accent">选择图片</button>
+            </div>
+            <div class="file-pill" id="currentFile">未选择图片</div>
+            <p class="support-copy">支持把图片直接拖进右侧工作台，也可以从最近记录里一键恢复。</p>
+            <div class="recent-list" id="recentList"></div>
+          </section>
+
+          <section class="panel compact">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Actions</span>
+                <h2>快速操作</h2>
+              </div>
+            </div>
+            <div class="button-row">
+              <button id="resetPreviewBtn" class="button ghost">恢复源图</button>
+              <button id="renderPreviewBtn" class="button accent">生成预览</button>
+              <button id="exportBtn" class="button solid">导出结果</button>
+            </div>
+            <div class="shortcut-strip">
+              <span class="shortcut-chip"><kbd>Ctrl</kbd><kbd>O</kbd> 选图</span>
+              <span class="shortcut-chip"><kbd>Ctrl</kbd><kbd>Enter</kbd> 预览</span>
+              <span class="shortcut-chip"><kbd>Ctrl</kbd><kbd>S</kbd> 导出</span>
+              <span class="shortcut-chip"><kbd>Delete</kbd> 撤销选区</span>
+            </div>
+          </section>
+        </div>
+
+        <div class="sidebar-page" data-page="edit">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Watermark</span>
+                <h2>水印设置</h2>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wmEnabled">
+                <span>启用</span>
+              </label>
+            </div>
+            <div class="field-grid">
+              <label class="field">
+                <span>文字</span>
+                <input type="text" id="wmText">
+              </label>
+              <label class="field">
+                <span>字体</span>
+                <select id="wmFontPreset"></select>
+              </label>
+              <label class="field full">
+                <span>自定义字体文件</span>
+                <div class="inline-grid wide">
+                  <input type="text" id="wmFontPath" placeholder="可选：TTF / OTF / TTC 字体路径">
+                  <button id="browseFontBtn" class="button ghost" type="button">浏览</button>
+                </div>
+              </label>
+              <div class="field full field-note">
+                <span>当前生效字体</span>
+                <p class="support-copy font-preview" id="wmFontPreview">当前字体：默认：Dancing Script</p>
+              </div>
+              <div class="field full field-note">
+                <span>字体小样</span>
+                <div class="font-sample-card" id="fontSampleCard">
+                  <p class="font-sample-text" id="wmFontSample">YourName · 水印预览 2026</p>
+                </div>
+              </div>
+              <label class="field">
+                <span>小样模式</span>
+                <select id="wmSampleMode"></select>
+              </label>
+              <label class="field">
+                <span>位置</span>
+                <select id="wmPosition"></select>
+              </label>
+              <div class="field full font-catalog-card">
+                <span>在线开源字体</span>
+                <div class="field-grid compact-grid">
+                  <label class="field full">
+                    <span>Google Fonts API Key</span>
+                    <input type="password" id="fontApiKey" placeholder="用于读取 Google Fonts 官方字体列表（仅本次会话使用）">
+                  </label>
+                  <label class="field full">
+                    <span>联网筛选</span>
+                    <div class="inline-grid wide">
+                      <input type="text" id="fontCatalogQuery" placeholder="输入字体名或关键词，例如 Noto / Serif / Handwriting">
+                      <button id="loadOnlineFontsBtn" class="button ghost" type="button">读取列表</button>
+                    </div>
+                    <div class="pill-row font-filter-row">
+                      <button class="mini-chip" type="button" data-font-query="Noto Sans SC">中文黑体</button>
+                      <button class="mini-chip" type="button" data-font-query="Noto Serif SC">中文衬线</button>
+                      <button class="mini-chip" type="button" data-font-query="Noto Sans JP">日文 UI</button>
+                      <button class="mini-chip" type="button" data-font-query="Handwriting">手写体</button>
+                      <button class="mini-chip" type="button" data-font-query="Display">展示体</button>
+                    </div>
+                  </label>
+                  <label class="field full">
+                    <span>在线字体列表</span>
+                    <div class="inline-grid wide">
+                      <select id="onlineFontList"></select>
+                      <button id="downloadOnlineFontBtn" class="button ghost" type="button">下载到项目</button>
+                    </div>
+                  </label>
+                </div>
+                <p class="support-copy font-catalog-status" id="fontCatalogStatus">在线字体源：Google Fonts（需 API key）</p>
+                <div class="field-note recent-fonts-block">
+                  <span>最近下载</span>
+                  <div class="recent-font-list" id="recentFontList"></div>
+                </div>
+              </div>
+              <label class="field">
+                <span>字体大小</span>
+                <input type="number" id="wmFontSize" min="12" max="200">
+              </label>
+              <label class="field">
+                <span>透明度</span>
+                <input type="range" id="wmOpacity" min="0.1" max="1" step="0.05">
+              </label>
+              <label class="field">
+                <span>文字颜色</span>
+                <input type="color" id="wmColor">
+              </label>
+              <label class="field two-up">
+                <span>旋转范围</span>
+                <div class="inline-grid">
+                  <input type="number" id="wmRotMin" min="-45" max="45">
+                  <input type="number" id="wmRotMax" min="-45" max="45">
+                </div>
+              </label>
+            </div>
+            <label class="switch solo">
+              <input type="checkbox" id="wmRandomOffset">
+              <span>启用随机偏移</span>
+            </label>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Masking</span>
+                <h2>打码设置</h2>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="mosaicEnabled">
+                <span>启用</span>
+              </label>
+            </div>
+            <div class="field-grid">
+              <label class="field">
+                <span>模式</span>
+                <select id="mosaicMode">
+                  <option value="pixelate">pixelate</option>
+                  <option value="blur">blur</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>像素大小</span>
+                <input type="number" id="mosaicPixelSize" min="2" max="50">
+              </label>
+              <label class="field">
+                <span>模糊半径</span>
+                <input type="number" id="mosaicBlurRadius" min="1" max="50">
+              </label>
+              <label class="field">
+                <span>处理顺序</span>
+                <select id="processOrder"></select>
+              </label>
+            </div>
+            <div class="region-toolbar">
+              <span class="hint">在右侧源图上拖拽选择区域</span>
+              <div class="region-actions">
+                <button id="undoRegionBtn" class="button ghost">撤销上一个</button>
+                <button id="clearRegionsBtn" class="button ghost">清空选区</button>
+              </div>
+            </div>
+            <div class="region-list" id="regionList"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Upscale</span>
+                <h2>超分设置</h2>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="upscaleEnabled">
+                <span>启用</span>
+              </label>
+            </div>
+            <div class="field-grid">
+              <label class="field">
+                <span>引擎</span>
+                <select id="upscaleEngine"></select>
+              </label>
+              <label class="field">
+                <span>模型</span>
+                <select id="upscaleModel"></select>
+              </label>
+              <label class="field full">
+                <span>自定义权重</span>
+                <div class="inline-grid wide">
+                  <input type="text" id="upscaleCustomModel" placeholder="可选：Real-ESRGAN 本地 .pth 路径">
+                  <button id="browseModelBtn" class="button ghost" type="button">浏览</button>
+                </div>
+              </label>
+              <label class="field">
+                <span>放大倍数</span>
+                <select id="upscaleScale"></select>
+              </label>
+              <label class="field">
+                <span>降噪等级</span>
+                <select id="upscaleNoise">
+                  <option value="-1">-1</option>
+                  <option value="0">0</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <div class="sidebar-page" data-page="publish">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Batch</span>
+                <h2>批量处理</h2>
+              </div>
+              <div class="inline-grid batch-actions">
+                <button id="startBatchBtn" class="button solid">开始批量处理</button>
+                <button id="stopBatchBtn" class="button ghost" type="button">停止处理</button>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label class="field full">
+                <span>输入目录</span>
+                <div class="inline-grid wide">
+                  <input type="text" id="batchInputDir" placeholder="选择待处理图片目录">
+                  <button id="browseBatchInputBtn" class="button ghost" type="button">浏览</button>
+                </div>
+              </label>
+              <label class="field full">
+                <span>输出目录</span>
+                <div class="inline-grid wide">
+                  <input type="text" id="batchOutputDir" placeholder="选择处理结果目录">
+                  <button id="browseBatchOutputBtn" class="button ghost" type="button">浏览</button>
+                </div>
+              </label>
+            </div>
+            <div class="progress-block">
+              <div class="progress-meta">
+                <strong id="batchStatusText">未开始</strong>
+                <span id="batchProgressLabel">0 / 0</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill" id="batchProgressFill"></div>
+              </div>
+              <div class="batch-footnote">
+                <span id="batchCurrentFile">等待任务开始；停止会在当前图片完成后生效</span>
+                <span id="batchSummary">成功 0 · 错误 0</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Pixiv</span>
+                <h2>自动上传</h2>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="pixivEnabled">
+                <span>启用</span>
+              </label>
+            </div>
+            <div class="field-grid">
+              <label class="field">
+                <span>上传方式</span>
+                <select id="pixivUploadMode"></select>
+              </label>
+              <label class="field">
+                <span>浏览器</span>
+                <select id="pixivBrowser"></select>
+              </label>
+              <label class="field">
+                <span>可见范围</span>
+                <select id="pixivVisibility"></select>
+              </label>
+              <label class="field">
+                <span>年龄限制</span>
+                <select id="pixivAge"></select>
+              </label>
+              <label class="field">
+                <span>自动投稿</span>
+                <select id="pixivSubmitMode">
+                  <option value="manual">手动确认</option>
+                  <option value="auto">自动投稿</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>标签语言</span>
+                <select id="pixivTagLanguage"></select>
+              </label>
+              <label class="field">
+                <span>安全策略</span>
+                <select id="pixivSafetyMode"></select>
+              </label>
+              <label class="field full">
+                <span>浏览器资料目录</span>
+                <div class="inline-grid wide">
+                  <input type="text" id="pixivProfileDir" placeholder="保存 Pixiv 登录状态的目录">
+                  <button id="browsePixivProfileBtn" class="button ghost" type="button">浏览</button>
+                </div>
+              </label>
+              <label class="field full">
+                <span>Cookie</span>
+                <textarea id="pixivCookie" rows="3" placeholder="仅在 Cookie + CSRF 直传模式下使用；请粘贴完整 Pixiv Cookie"></textarea>
+              </label>
+              <label class="field full">
+                <span>CSRF Token</span>
+                <input type="text" id="pixivCsrfToken" placeholder="仅在 Cookie + CSRF 直传模式下使用">
+              </label>
+              <label class="field full">
+                <span>LLM Base URL</span>
+                <input type="text" id="pixivLlmBaseUrl" placeholder="例如 https://api.openai.com/v1 或你的 OpenAI-compatible 地址">
+              </label>
+              <label class="field full">
+                <span>LLM API Key</span>
+                <div class="inline-grid wide">
+                  <input type="password" id="pixivLlmApiKey" placeholder="留空表示不带 Authorization 头">
+                  <button id="testPixivLlmBtn" class="button ghost" type="button">测试 LLM</button>
+                </div>
+              </label>
+              <label class="field">
+                <span>LLM Model</span>
+                <input type="text" id="pixivLlmModel" placeholder="例如 gpt-4.1-mini / qwen / gemma 等兼容模型名">
+              </label>
+              <label class="field">
+                <span>Temperature</span>
+                <input type="number" id="pixivLlmTemperature" min="0" max="2" step="0.1" value="0.1">
+              </label>
+              <label class="field">
+                <span>Timeout</span>
+                <input type="number" id="pixivLlmTimeout" min="5" max="300" step="1" value="60">
+              </label>
+              <label class="field full">
+                <span>标题模板</span>
+                <input type="text" id="pixivTitleTemplate" placeholder="支持 {stem} / {name}">
+              </label>
+              <label class="field full">
+                <span>手动标签</span>
+                <textarea id="pixivTags" rows="3" placeholder="多个标签可用逗号或换行分隔"></textarea>
+              </label>
+              <label class="field full">
+                <span>说明</span>
+                <textarea id="pixivCaption" rows="4" placeholder="将自动填入 Pixiv 投稿说明"></textarea>
+              </label>
+            </div>
+            <div class="switch-grid">
+              <label class="switch card-switch"><input type="checkbox" id="pixivUseMetadataTags"><span>从 metadata 提取 prompt 标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLlmEnabled"><span>启用 LLM 标签润色</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivIncludeLoraTags"><span>自动追加 LoRA 标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddOriginalTag"><span>追加原创标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAiGenerated"><span>标记为 AI 生成</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddUpscaleTag"><span>追加超分标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddEngineTag"><span>追加超分引擎标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddModelTag"><span>追加模型标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddScaleTag"><span>追加倍率标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLockTags"><span>不允许其他用户编辑标签</span></label>
+            </div>
+            <p class="support-copy" id="pixivModeHint">自动标签会裁到 Pixiv 当前的 10 个上限。手动投稿模式下，浏览器会停在投稿页，方便你确认首张的标题、标签和说明是否符合预期。</p>
+            <p class="support-copy">Cookie / CSRF Token 和 LLM API Key 都属于敏感凭证，只建议保存在你自己的本机配置里，不要提交到 GitHub。安全策略默认会自动升到 R-18 / R-18G，并拦截高风险未成年性化组合，喵。</p>
+          </section>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="workspace-header">
+        <div>
+          <div class="eyebrow">Dual Preview Desk</div>
+          <h2>源图选区 + 结果预览</h2>
+        </div>
+        <div class="workspace-badges">
+          <span class="badge" id="badgeSourceSize">源图: -</span>
+          <span class="badge" id="badgePreviewSize">结果: -</span>
+          <span class="badge" id="badgeRegionCount">选区: 0</span>
+          <span class="badge accent" id="badgeStatus">状态: 等待载入</span>
+        </div>
+      </header>
+
+      <div class="preview-grid">
+        <section class="stage-card">
+          <div class="stage-head">
+            <div>
+              <span class="panel-kicker">Source Stage</span>
+              <h3>源图工作台</h3>
+            </div>
+            <span class="stage-caption" id="sourceMeta">未选择图片</span>
+          </div>
+          <div class="viewport source" id="sourceViewport">
+            <div class="drop-overlay hidden" id="sourceDropOverlay">
+              <strong>松开即可载入图片</strong>
+              <span>支持 PNG / JPG / JPEG / WEBP / BMP</span>
+            </div>
+            <div class="empty-state" id="sourceEmpty">
+              <strong>先加载一张图片</strong>
+              <span>选区拖拽会在这里完成，适合做打码定位。</span>
+            </div>
+            <div class="image-stage" id="sourceStage">
+              <img id="sourceImage" alt="source preview">
+              <div id="selectionLayer"></div>
+              <div id="dragSelection" class="drag-selection hidden"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="stage-card">
+          <div class="stage-head">
+            <div>
+              <span class="panel-kicker">Preview Stage</span>
+              <h3>结果预览</h3>
+            </div>
+            <span class="stage-caption" id="resultMeta">等待生成预览</span>
+          </div>
+          <div class="viewport result" id="resultViewport">
+            <div class="drop-overlay hidden" id="resultDropOverlay">
+              <strong>也可以直接拖到这里</strong>
+              <span>拖拽图片后会同步更新源图与预览。</span>
+            </div>
+            <div class="empty-state" id="resultEmpty">
+              <strong>预览结果会显示在这里</strong>
+              <span>你可以反复微调参数，再决定是否导出。</span>
+            </div>
+            <div class="image-stage result-stage" id="resultStage">
+              <img id="resultImage" alt="processed preview">
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="log-card">
+        <div class="panel-head">
+          <div>
+            <span class="panel-kicker">Activity</span>
+            <h2>处理日志</h2>
+          </div>
+          <button id="clearLogBtn" class="button ghost">清空日志</button>
+        </div>
+        <div id="logList" class="log-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
