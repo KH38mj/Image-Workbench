@@ -183,6 +183,7 @@ function cacheRefs() {
     'pixivRememberLlmApiKey',
     'loadPixivLlmModelsBtn',
     'testPixivLlmBtn',
+    'previewPixivBtn',
     'pixivLlmModelPreset',
     'pixivLlmModelCustom',
     'pixivLlmTemperature',
@@ -254,6 +255,7 @@ function bindEvents() {
   refs.pixivLlmModelPreset.addEventListener('change', syncPixivLlmModelState);
   refs.loadPixivLlmModelsBtn.addEventListener('click', onLoadPixivLlmModels);
   refs.testPixivLlmBtn.addEventListener('click', onTestPixivLlm);
+  refs.previewPixivBtn.addEventListener('click', onPreviewPixivSubmission);
   refs.startBatchBtn.addEventListener('click', onStartBatch);
   refs.stopBatchBtn.addEventListener('click', onStopBatch);
   refs.renderPreviewBtn.addEventListener('click', onRenderPreview);
@@ -1016,6 +1018,34 @@ async function onLoadPixivLlmModels() {
   } finally {
     syncPixivFieldState();
   }
+}
+
+async function onPreviewPixivSubmission() {
+  refs.previewPixivBtn.disabled = true;
+  updateStatusBadge('Status: Building Pixiv preview');
+  const result = await window.pywebview.api.preview_pixiv_submission(buildSettings());
+  if (!result.ok) {
+    pushLog(result.error || 'Pixiv preview failed');
+    updateStatusBadge('Status: Pixiv preview failed');
+    refs.previewPixivBtn.disabled = false;
+    syncPixivFieldState();
+    return;
+  }
+
+  const preview = result.preview || {};
+  pushLog(`[Pixiv Preview] File: ${preview.fileName || ''}`);
+  pushLog(`[Pixiv Preview] Title: ${preview.title || ''}`);
+  pushLog(`[Pixiv Preview] Tags (${preview.tagCount || 0}/${preview.maxTags || 10}): ${((preview.tags || []).join(', ')) || '(empty)'}`);
+  pushLog(`[Pixiv Preview] Caption: ${preview.caption || '(empty)'}`);
+  pushLog(`[Pixiv Preview] Mode: ${preview.uploadModeLabel || preview.uploadMode || ''} / ${preview.submitModeLabel || preview.submitMode || ''}`);
+  pushLog(`[Pixiv Preview] Visibility: ${preview.visibilityLabel || preview.visibility || ''} / ${preview.ageRestrictionLabel || preview.ageRestriction || ''}`);
+  pushLog(`[Pixiv Preview] Upload file: ${preview.uploadFileName || ''} (${preview.uploadFormat || ''})`);
+  (preview.infos || []).forEach((message) => pushLog(`[Pixiv Preview] ${message}`));
+  (preview.warnings || []).forEach((message) => pushLog(`[Pixiv Preview] Warning: ${message}`));
+  (preview.errors || []).forEach((message) => pushLog(`[Pixiv Preview] Error: ${message}`));
+  updateStatusBadge(`Status: ${result.message || 'Pixiv preview ready'}`);
+  refs.previewPixivBtn.disabled = false;
+  syncPixivFieldState();
 }
 
 async function onTestPixivLlm() {
