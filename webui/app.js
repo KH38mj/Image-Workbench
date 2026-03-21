@@ -763,6 +763,30 @@ async function loadImagePath(path, sourceLabel = '载入图片') {
   handleLoadResult(result, sourceLabel);
 }
 
+async function loadImageFile(file, sourceLabel = '拖拽载入') {
+  if (!file) {
+    pushLog('没有可读取的拖拽文件');
+    updateStatusBadge('状态: 拖拽载入失败');
+    return;
+  }
+
+  const filePath = String(file.path || '').trim();
+  if (filePath) {
+    await loadImagePath(filePath, sourceLabel);
+    return;
+  }
+
+  updateStatusBadge('状态: 正在读取拖拽图片');
+  try {
+    const dataUrl = await fileToDataUrl(file);
+    const result = await window.pywebview.api.open_image_blob(file.name || 'dropped-image', dataUrl);
+    handleLoadResult(result, `${sourceLabel}（兼容模式）`);
+  } catch (error) {
+    pushLog(`拖拽载入失败: ${error?.message || error}`);
+    updateStatusBadge('状态: 拖拽载入失败');
+  }
+}
+
 function handleLoadResult(result, sourceLabel) {
   if (!result.ok) {
     if (!result.cancelled) {
@@ -1443,14 +1467,7 @@ async function onWorkspaceDrop(event) {
     return;
   }
 
-  const filePath = imageFile.path || '';
-  if (!filePath) {
-    pushLog('当前环境未暴露拖拽文件路径，请改用“选择图片”按钮');
-    updateStatusBadge('状态: 无法读取拖拽文件路径');
-    return;
-  }
-
-  await loadImagePath(filePath, '拖拽载入');
+  await loadImageFile(imageFile, '拖拽载入');
 }
 
 function hasFileTransfer(event) {
@@ -1460,6 +1477,15 @@ function hasFileTransfer(event) {
 
 function isSupportedImagePath(value) {
   return /\.(png|jpe?g|webp|bmp)$/i.test(String(value || ''));
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('读取拖拽文件失败'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function cancelActiveDrag() {
@@ -1531,6 +1557,8 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
 }
+
+
 
 
 

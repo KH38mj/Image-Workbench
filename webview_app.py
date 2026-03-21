@@ -302,6 +302,7 @@ class WebviewBridge:
         self._lock = threading.RLock()
         self._current_image_path: Optional[Path] = None
         self._current_preview_kind = "source"
+        self._dropped_image_dir = Path(tempfile.mkdtemp(prefix="pywebview_drop_"))
         self._loaded_sensitive_config = False
         self._session_pixiv_secrets = {field: "" for field in PIXIV_SENSITIVE_FIELDS}
         self._config = self._load_config()
@@ -379,6 +380,18 @@ class WebviewBridge:
                 raise RuntimeError("未提供图片路径")
             with self._lock:
                 return self._load_image_from_path(Path(raw_path), message_prefix="已加载图片")
+        except Exception as exc:
+            return self._error_response(exc)
+
+    def open_image_blob(self, file_name: str = "", data_url: str = "") -> Dict[str, Any]:
+        try:
+            raw_name = Path(str(file_name or "").strip() or "dropped-image").name
+            raw_data = str(data_url or "").strip()
+            if not raw_data:
+                raise RuntimeError("未提供拖拽图片数据")
+            with self._lock:
+                dropped_path = self._write_dropped_image(raw_name, raw_data)
+                return self._load_image_from_path(dropped_path, message_prefix="已加载拖拽图片")
         except Exception as exc:
             return self._error_response(exc)
 
@@ -800,6 +813,35 @@ class WebviewBridge:
             "recentImages": self._recent_image_items(),
             "message": f"{message_prefix}：{candidate.name}",
         }
+
+    def _write_dropped_image(self, file_name: str, data_url: str) -> Path:
+        match = re.match(r"^data:(?P<mime>[\w.+-]+/[\w.+-]+);base64,(?P<data>.+)$", data_url, re.DOTALL)
+        if not match:
+            raise RuntimeError("拖拽图片数据格式无效")
+
+        mime = str(match.group("mime") or "").lower()
+        encoded = re.sub(r"\s+", "", match.group("data") or "")
+        payload = base64.b64decode(encoded, validate=True)
+
+        source_name = Path(file_name).name or "dropped-image"
+        suffix = Path(source_name).suffix.lower()
+        if suffix not in IMAGE_SUFFIXES:
+            suffix = {
+                "image/png": ".png",
+                "image/jpeg": ".jpg",
+                "image/jpg": ".jpg",
+                "image/webp": ".webp",
+                "image/bmp": ".bmp",
+            }.get(mime, "")
+        if suffix not in IMAGE_SUFFIXES:
+            raise RuntimeError("拖拽图片格式不受支持，仅支持 PNG / JPG / JPEG / WEBP / BMP")
+
+        stem = Path(source_name).stem or "dropped-image"
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._") or "dropped-image"
+        token = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        target = self._dropped_image_dir / f"{safe_stem}_{token}{suffix}"
+        target.write_bytes(payload)
+        return target
 
     def _remember_recent_image(self, path: Path) -> None:
         value = str(path)
