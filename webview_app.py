@@ -647,7 +647,7 @@ class WebviewBridge:
                         use_cache=False,
                     )
                 else:
-                    warning_messages.append("??? LLM ????????????????????????")
+                    warning_messages.append("已启用 LLM 看图打标，但当前还没有加载图片，已跳过图像测试。")
             llm_tags = self._generate_llm_pixiv_tags(
                 sample_tags,
                 pixiv_settings,
@@ -657,14 +657,14 @@ class WebviewBridge:
                 use_cache=False,
             )
             if not llm_tags:
-                raise RuntimeError("LLM ??????????????????")
+                raise RuntimeError("LLM 没有返回测试标签，请检查模型输出格式")
             return {
                 "ok": True,
                 "tags": llm_tags,
                 "imageTags": image_tags,
                 "infos": info_messages,
                 "warnings": warning_messages,
-                "message": "LLM ???????? Pixiv ??????",
+                "message": "LLM 连接成功，已生成 Pixiv 风格测试标签",
             }
         except Exception as exc:
             return self._error_response(exc)
@@ -1564,9 +1564,9 @@ class WebviewBridge:
                 self._pixiv_llm_cache[cache_key] = list(llm_tags)
             if info_messages is not None:
                 if image_tags:
-                    info_messages.append(f"LLM ??? metadata ???????? {len(llm_tags)} ? Pixiv ???")
+                    info_messages.append(f"LLM 已综合 metadata 与看图标签整理出 {len(llm_tags)} 个 Pixiv 标签。")
                 else:
-                    info_messages.append(f"LLM ?? metadata ?????? {len(llm_tags)} ? Pixiv ???")
+                    info_messages.append(f"LLM 已将 metadata 提示词整理为 {len(llm_tags)} 个 Pixiv 标签。")
             return llm_tags
         except Exception as exc:
             if warning_messages is not None:

@@ -911,22 +911,22 @@ async function onLoadPixivLlmModels() {
 
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
-  updateStatusBadge('Status: testing Pixiv LLM');
+  updateStatusBadge('状态: 正在测试 Pixiv LLM');
   const result = await window.pywebview.api.test_pixiv_llm({ pixiv: readPixivSettings() });
   if (!result.ok) {
-    pushLog(result.error || 'Pixiv LLM test failed');
-    updateStatusBadge('Status: Pixiv LLM test failed');
+    pushLog(result.error || 'Pixiv LLM 测试失败');
+    updateStatusBadge('状态: Pixiv LLM 测试失败');
     syncPixivFieldState();
     return;
   }
 
   (result.infos || []).forEach((message) => pushLog(`[Pixiv LLM] ${message}`));
   (result.warnings || []).forEach((message) => pushLog(`[Pixiv LLM] ${message}`));
-  pushLog(`[Pixiv LLM] metadata tags: ${(result.tags || []).join(', ')}`);
+  pushLog(`[Pixiv LLM] 综合标签: ${(result.tags || []).join(', ')}`);
   if ((result.imageTags || []).length) {
-    pushLog(`[Pixiv LLM] image tags: ${result.imageTags.join(', ')}`);
+    pushLog(`[Pixiv LLM] 看图标签: ${result.imageTags.join(', ')}`);
   }
-  updateStatusBadge(`Status: ${result.message}`);
+  updateStatusBadge(`状态: ${result.message}`);
   syncPixivFieldState();
 }
 
@@ -1082,21 +1082,21 @@ function updatePixivModeHint() {
   const llmEnabled = refs.pixivLlmEnabled.checked;
   const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
   if (!enabled) {
-    refs.pixivModeHint.textContent = '??????? Pixiv ?? 10 ?????????????????????????? Cookie + CSRF ???';
+    refs.pixivModeHint.textContent = '自动标签会受到 Pixiv 当前 10 个标签上限的约束。启用后再决定是走浏览器确认，还是用 Cookie + CSRF 直传。';
     return;
   }
   let message = directMode
-    ? '??? Cookie + CSRF ????????? Pixiv ????????????????????????????'
-    : '?????????????????????????????????????????????????';
+    ? '当前是 Cookie + CSRF 直传模式，会直接向 Pixiv 提交请求；即使你选择了手动确认，也不会停留在网页投稿页。'
+    : '当前是浏览器自动填写模式。手动投稿时，浏览器会停在投稿页，方便你确认标题、标签和说明是否符合预期。';
   if (llmEnabled && llmImageEnabled) {
-    message += ' ??????????????????? metadata ???? OpenAI-compatible ?????? Pixiv ???';
+    message += ' 当前流程会先做看图打标，再把看图结果和 metadata 一起送去 OpenAI-compatible 接口生成最终 Pixiv 标签。';
   } else if (llmEnabled) {
-    message += ' ????? LLM ?????metadata ?????? OpenAI-compatible ????? Pixiv ?????';
+    message += ' 当前启用了 LLM 综合润色，metadata 提示词会送去 OpenAI-compatible 接口整理成 Pixiv 风格标签。';
   }
   if (refs.pixivSafetyMode.value === 'strict') {
-    message += ' ???????????? NSFW ????????????????';
+    message += ' 当前启用了严格拦截，命中 NSFW 或幼态高风险标签时不会自动投稿。';
   } else if (refs.pixivSafetyMode.value === 'auto') {
-    message += ' ????????????????/?????????? R-18 / R-18G???????????????';
+    message += ' 当前启用了自动安全护栏，命中成人/猎奇标签会自动提升到 R-18 / R-18G，并拦截高风险未成年性化组合。';
   }
   refs.pixivModeHint.textContent = message;
 }

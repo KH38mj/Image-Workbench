@@ -361,7 +361,7 @@
                 <input type="text" id="pixivCsrfToken" placeholder="仅在 Cookie + CSRF 直传模式下使用">
               </label>
               <label class="field full">
-                <span>LLM Base URL</span>
+                <span>LLM 接口地址</span>
                 <input type="text" id="pixivLlmBaseUrl" placeholder="例如 https://api.openai.com/v1 或你的 OpenAI-compatible 地址">
               </label>
               <label class="field full">
@@ -372,7 +372,7 @@
                 </div>
               </label>
               <label class="field">
-                <span>LLM Model</span>
+                <span>LLM 模型</span>
                 <div class="inline-grid wide">
                   <select id="pixivLlmModelPreset"></select>
                   <button id="loadPixivLlmModelsBtn" class="button ghost" type="button">读取模型</button>
@@ -383,20 +383,20 @@
                 <input type="text" id="pixivLlmModelCustom" placeholder="下拉里没有时，在这里填兼容模型名">
               </label>
               <label class="field">
-                <span>Temperature</span>
+                <span>采样温度</span>
                 <input type="number" id="pixivLlmTemperature" min="0" max="2" step="0.1" value="0.1">
               </label>
               <label class="field">
-                <span>Timeout</span>
+                <span>超时时间</span>
                 <input type="number" id="pixivLlmTimeout" min="5" max="300" step="1" value="60">
               </label>
               <label class="field full">
-                <span>???? Prompt</span>
-                <textarea id="pixivLlmPromptMetadata" rows="5" placeholder="?????????????? prompt?"></textarea>
+                <span>综合整理 Prompt</span>
+                <textarea id="pixivLlmPromptMetadata" rows="5" placeholder="可选。留空时使用内置综合整理 prompt。"></textarea>
               </label>
               <label class="field full">
-                <span>???? Prompt</span>
-                <textarea id="pixivLlmPromptImage" rows="5" placeholder="?????????????? prompt?"></textarea>
+                <span>看图打标 Prompt</span>
+                <textarea id="pixivLlmPromptImage" rows="5" placeholder="可选。留空时使用内置看图打标 prompt。"></textarea>
               </label>
               <label class="field full">
                 <span>标题模板</span>
@@ -412,20 +412,20 @@
               </label>
             </div>
             <div class="switch-grid">
-              <label class="switch card-switch"><input type="checkbox" id="pixivUseMetadataTags"><span>? metadata ?? prompt ??</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivLlmEnabled"><span>?? LLM ????</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivLlmImageEnabled"><span>?? LLM ????</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivIncludeLoraTags"><span>???? LoRA ??</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddOriginalTag"><span>??????</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAiGenerated"><span>??? AI ??</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddUpscaleTag"><span>??????</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddEngineTag"><span>????????</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddModelTag"><span>??????</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivAddScaleTag"><span>??????</span></label>
-              <label class="switch card-switch"><input type="checkbox" id="pixivLockTags"><span>???????????</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivUseMetadataTags"><span>从 metadata 提取 prompt 标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLlmEnabled"><span>启用 LLM 综合润色</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLlmImageEnabled"><span>启用 LLM 看图打标</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivIncludeLoraTags"><span>自动追加 LoRA 标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddOriginalTag"><span>追加原创标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAiGenerated"><span>标记为 AI 生成</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddUpscaleTag"><span>追加超分标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddEngineTag"><span>追加超分引擎标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddModelTag"><span>追加模型标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivAddScaleTag"><span>追加倍率标签</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLockTags"><span>不允许其他用户编辑标签</span></label>
             </div>
             <p class="support-copy" id="pixivModeHint">自动标签会裁到 Pixiv 当前的 10 个上限。手动投稿模式下，浏览器会停在投稿页，方便你确认首张的标题、标签和说明是否符合预期。</p>
-            <p class="support-copy field-note">LLM ???????????????????????? Base URL ? API Key?????????????????????????????? metadata ????????????? Prompt ?????????????? prompt?</p>
+            <p class="support-copy field-note">LLM 模型支持从提供商自动读取，也支持手动输入。先填写 Base URL 和 API Key，再点读取模型会更顺手。流程上会先做看图打标，再把看图结果和 metadata 一起交给综合整理模型。两个 Prompt 槽位留空时都会回退到内置默认 prompt。</p>
             <p class="support-copy">Cookie / CSRF Token 和 LLM API Key 都属于敏感凭证，只建议保存在你自己的本机配置里，不要提交到 GitHub。安全策略默认会自动升到 R-18 / R-18G，并拦截高风险未成年性化组合，喵。</p>
           </section>
         </div>
