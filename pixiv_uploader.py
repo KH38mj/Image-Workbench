@@ -39,6 +39,13 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
     UPLOAD_URL = "https://www.pixiv.net/upload.php"
     LOGIN_TEXTS = ["Login", "Log in", "ログイン", "登录", "登入"]
+    LOGIN_REQUIRED_SELECTORS = [
+        "input[type='password']",
+        "input[name='password']",
+        "input[autocomplete='current-password']",
+        "form[action*='login']",
+        "button[type='submit']",
+    ]
     UPLOAD_READY_SELECTORS = [
         "input[type='file']",
         "input[placeholder*='title' i]",
@@ -133,10 +140,24 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 return True
         return False
 
+    def _is_login_required(self, page) -> bool:
+        if self._is_upload_ready(page):
+            return False
+
+        current_url = page.url.lower()
+        if "accounts.pixiv.net" in current_url or "/login" in current_url:
+            return True
+
+        login_form = self._first_locator(page, selectors=self.LOGIN_REQUIRED_SELECTORS)
+        if login_form is not None and self._has_any_text(page, self.LOGIN_TEXTS):
+            return True
+
+        return False
+
     def _wait_for_login(self, page, timeout_seconds: int = 300) -> None:
         page.goto(self.UPLOAD_URL, wait_until="domcontentloaded")
 
-        if "login" not in page.url.lower() and not self._has_any_text(page, self.LOGIN_TEXTS):
+        if not self._is_login_required(page):
             return
 
         self._log("[Pixiv] Pixiv login is required for this browser profile.")
@@ -148,7 +169,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             page.wait_for_timeout(1000)
-            if "login" not in page.url.lower() and not self._has_any_text(page, self.LOGIN_TEXTS):
+            if not self._is_login_required(page):
                 return
 
         raise RuntimeError("Waiting for Pixiv login timed out.")
@@ -159,7 +180,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
     def _wait_for_upload_ready(self, page, timeout_seconds: int = 60) -> None:
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
-            if "login" in page.url.lower() or self._has_any_text(page, self.LOGIN_TEXTS):
+            if self._is_login_required(page):
                 self._wait_for_login(page, timeout_seconds=max(10, int(deadline - time.time())))
                 page.goto(self.UPLOAD_URL, wait_until="domcontentloaded")
             if self._is_upload_ready(page):
