@@ -348,6 +348,53 @@ class _BrowserPixivUploader(_BasePixivUploader):
         except Exception:
             return False
 
+    def _describe_active_element(self, page) -> str:
+        try:
+            details = page.evaluate(
+                """() => {
+                    const el = document.activeElement;
+                    if (!el) return null;
+                    const text = (el.value || el.textContent || '').replace(/\\s+/g, ' ').trim();
+                    return {
+                        tag: (el.tagName || '').toLowerCase(),
+                        type: el.getAttribute('type') || '',
+                        role: el.getAttribute('role') || '',
+                        id: el.id || '',
+                        name: el.getAttribute('name') || '',
+                        className: typeof el.className === 'string' ? el.className : '',
+                        text: text.slice(0, 80),
+                    };
+                }"""
+            )
+        except Exception:
+            return "unknown"
+
+        if not details:
+            return "none"
+
+        summary = ", ".join(
+            f"{key}={value}"
+            for key, value in details.items()
+            if value
+        )
+        return summary or "unknown"
+
+    def _confirm_after_suggestion_click(self, page, tag: str, current_count: Optional[int], source: str) -> Optional[int]:
+        updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=800)
+        if current_count is not None and updated_count is not None and updated_count > current_count:
+            return updated_count
+        if current_count is None:
+            return updated_count
+
+        self._log(f"[Pixiv] Suggestion click from {source} needs explicit Enter: {tag}")
+        page.keyboard.press("Enter")
+        updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1200)
+        if current_count is not None and updated_count is not None and updated_count > current_count:
+            return updated_count
+        if current_count is None:
+            return updated_count
+        return None
+
     def _click_matching_tag_suggestion(self, page, tag: str, current_count: Optional[int]) -> Optional[int]:
         suggestion_container = self._find_tag_suggestion_container(page)
         container = self._find_tag_container(page)
@@ -374,10 +421,8 @@ class _BrowserPixivUploader(_BasePixivUploader):
                     if not self._click_locator_or_interactive_ancestor(locator):
                         continue
                     self._log(f"[Pixiv] Clicked visible suggestion candidate from {root_name}: {candidate}")
-                    updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
-                    if current_count is not None and updated_count is not None and updated_count > current_count:
-                        return updated_count
-                    if current_count is None:
+                    updated_count = self._confirm_after_suggestion_click(page, tag, current_count, f"{root_name}/visible")
+                    if updated_count is not None:
                         return updated_count
                     self._log(f"[Pixiv] Visible suggestion click from {root_name} did not confirm: {tag}")
 
@@ -389,10 +434,8 @@ class _BrowserPixivUploader(_BasePixivUploader):
             )
             if clicked:
                 self._log(f"[Pixiv] Clicked DOM suggestion fallback from {root_name}: {tag}")
-                updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
-                if current_count is not None and updated_count is not None and updated_count > current_count:
-                    return updated_count
-                if current_count is None:
+                updated_count = self._confirm_after_suggestion_click(page, tag, current_count, f"{root_name}/dom")
+                if updated_count is not None:
                     return updated_count
                 self._log(f"[Pixiv] DOM suggestion fallback from {root_name} did not confirm: {tag}")
         return None
@@ -594,6 +637,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 self._log(f"[Pixiv] Tag strategy {strategy} did not confirm: {tag}")
 
             if not committed:
+                self._log(f"[Pixiv] Active element before suggestion fallback: {self._describe_active_element(page)}")
                 updated_count = self._click_matching_tag_suggestion(page, tag, current_count)
                 if current_count is not None and updated_count is not None and updated_count > current_count:
                     current_count = updated_count
