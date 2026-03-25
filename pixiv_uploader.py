@@ -133,6 +133,60 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
         return None
 
+    def _is_fillable_locator(self, locator) -> bool:
+        try:
+            tag_name = str(locator.evaluate("el => (el.tagName || '').toLowerCase()") or "").lower()
+            if tag_name == "textarea":
+                return True
+            if tag_name == "input":
+                input_type = str(locator.get_attribute("type") or "text").lower()
+                return input_type not in {"checkbox", "radio", "file", "hidden", "submit", "button", "image"}
+
+            contenteditable = str(locator.get_attribute("contenteditable") or "").lower()
+            role = str(locator.get_attribute("role") or "").lower()
+            return contenteditable == "true" or role in {"textbox", "combobox", "searchbox"}
+        except Exception:
+            return False
+
+    def _coerce_fillable_locator(self, locator):
+        if locator is None or self._count(locator) <= 0:
+            return None
+
+        primary = locator.first
+        if self._is_fillable_locator(primary):
+            return primary
+
+        descendant_selector = (
+            "input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='hidden']), "
+            "textarea, [contenteditable='true'], [role='textbox'], [role='combobox'], [role='searchbox']"
+        )
+        try:
+            descendants = primary.locator(descendant_selector)
+            if self._count(descendants) > 0 and self._is_fillable_locator(descendants.first):
+                return descendants.first
+        except Exception:
+            pass
+
+        return None
+
+    def _first_fillable_locator(self, page, selectors: Iterable[str] = (), labels: Iterable[str] = (), texts: Iterable[str] = ()):
+        for selector in selectors:
+            locator = self._coerce_fillable_locator(page.locator(selector))
+            if locator is not None:
+                return locator
+
+        for label in labels:
+            locator = self._coerce_fillable_locator(page.get_by_label(label, exact=False))
+            if locator is not None:
+                return locator
+
+        for text in texts:
+            locator = self._coerce_fillable_locator(page.get_by_text(text, exact=False))
+            if locator is not None:
+                return locator
+
+        return None
+
     def _has_any_text(self, page, texts: Iterable[str]) -> bool:
         for text in texts:
             locator = page.get_by_text(text, exact=False)
@@ -199,7 +253,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
         if value is None:
             return False
 
-        locator = self._first_locator(page, selectors=selectors, labels=labels, texts=texts)
+        locator = self._first_fillable_locator(page, selectors=selectors, labels=labels, texts=texts)
         if locator is None:
             return False
 
@@ -251,16 +305,22 @@ class _BrowserPixivUploader(_BasePixivUploader):
         if not tags:
             return True
 
-        locator = self._first_locator(
+        locator = self._first_fillable_locator(
             page,
             selectors=[
+                "input[name*='tag' i]:not([type='checkbox'])",
+                "input[id*='tag' i]:not([type='checkbox'])",
                 "input[placeholder*='tag' i]",
                 "input[placeholder*='Tag' i]",
                 "input[placeholder*='タグ']",
+                "input[placeholder*='标签']",
                 "input[aria-label*='tag' i]",
                 "input[aria-label*='タグ']",
+                "input[aria-label*='标签']",
+                "[role='combobox']",
             ],
             labels=["Tags", "Tag", "タグ", "标签"],
+            texts=["Tags", "Tag", "タグ", "标签"],
         )
         if locator is None:
             return False
