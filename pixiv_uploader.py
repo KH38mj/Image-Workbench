@@ -1,5 +1,6 @@
 import importlib.util
 import mimetypes
+import re
 import subprocess
 import sys
 import time
@@ -209,6 +210,37 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 continue
         return None
 
+    def _find_tag_container(self, page):
+        for label in ("标签", "タグ", "Tags", "Tag"):
+            title_locator = page.get_by_text(label, exact=False)
+            if self._count(title_locator) <= 0:
+                continue
+            try:
+                container = title_locator.first.locator(
+                    "xpath=ancestor::*[self::section or self::fieldset or self::div][.//*[self::input or self::textarea or @contenteditable='true' or @role='combobox']][1]"
+                )
+                if self._count(container) > 0:
+                    return container.first
+            except Exception:
+                continue
+        return None
+
+    def _read_tag_count(self, page) -> Optional[int]:
+        container = self._find_tag_container(page)
+        if container is None:
+            return None
+        try:
+            text = str(container.evaluate("(el) => el.textContent || ''") or "")
+        except Exception:
+            return None
+        match = re.search(r"(\d+)\s*/\s*10", text)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
     def _is_login_required(self, page) -> bool:
         if self._is_upload_ready(page):
             return False
@@ -340,6 +372,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
         if not tags:
             return True
 
+        tag_container = self._find_tag_container(page)
         selectors = [
             "[role='combobox'] input:not([type='checkbox'])",
             "[role='combobox'] textarea",
@@ -356,21 +389,50 @@ class _BrowserPixivUploader(_BasePixivUploader):
             "[role='combobox']",
         ]
         labels = ["Tags", "Tag", "タグ", "标签"]
+        search_root = tag_container or page
+        current_count = self._read_tag_count(page)
+        self._log(f"[Pixiv] Preparing to add {len(tags)} tag(s).")
 
         for tag in tags:
             locator = self._first_fillable_locator(
-                page,
+                search_root,
                 selectors=selectors,
                 labels=labels,
-                texts=labels,
+                texts=(),
             )
             if locator is None:
-                return False
-            locator.click()
-            locator.fill("")
-            locator.type(tag, delay=10)
-            page.keyboard.press("Enter")
-            page.wait_for_timeout(350)
+                raise RuntimeError(f"未找到 Pixiv 标签输入框，无法填写标签：{tag}")
+
+            committed = False
+            for key in ("Enter", "Tab"):
+                locator.click()
+                try:
+                    locator.press("Control+A")
+                    locator.press("Delete")
+                except Exception:
+                    try:
+                        locator.fill("")
+                    except Exception:
+                        pass
+
+                locator.type(tag, delay=10)
+                page.wait_for_timeout(150)
+                locator.press(key)
+                page.wait_for_timeout(450)
+
+                updated_count = self._read_tag_count(page)
+                if current_count is not None and updated_count is not None and updated_count > current_count:
+                    current_count = updated_count
+                    committed = True
+                    self._log(f"[Pixiv] Added tag: {tag} ({updated_count}/10)")
+                    break
+                if current_count is None:
+                    committed = True
+                    self._log(f"[Pixiv] Submitted tag without count feedback: {tag}")
+                    break
+
+            if not committed:
+                raise RuntimeError(f"Pixiv 未确认标签：{tag}")
         return True
 
     def _set_ai_generated_choice(self, page, enabled: bool) -> bool:
