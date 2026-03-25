@@ -1,4 +1,4 @@
-import importlib.util
+﻿import importlib.util
 import mimetypes
 import subprocess
 import sys
@@ -139,19 +139,19 @@ class _BrowserPixivUploader(_BasePixivUploader):
         if "login" not in page.url.lower() and not self._has_any_text(page, self.LOGIN_TEXTS):
             return
 
-        self._log("[Pixiv] ?????????????? Pixiv?")
+        self._log("[Pixiv] Pixiv login is required for this browser profile.")
         if not self.settings.get("auto_submit", True):
-            self._log("[Pixiv] ???????????????????????? Open Pixiv Draft?")
-            raise RuntimeError("Pixiv ???????????????????? Open Pixiv Draft")
+            self._log("[Pixiv] Please finish logging in inside the browser, then click Open Pixiv Draft again.")
+            raise RuntimeError("Pixiv login is required. Please finish logging in, then click Open Pixiv Draft again.")
 
-        self._log("[Pixiv] ???????????????????????")
+        self._log("[Pixiv] Please finish logging in inside the browser. The uploader will continue after login.")
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             page.wait_for_timeout(1000)
             if "login" not in page.url.lower() and not self._has_any_text(page, self.LOGIN_TEXTS):
                 return
 
-        raise RuntimeError("?? Pixiv ????")
+        raise RuntimeError("Waiting for Pixiv login timed out.")
 
     def _is_upload_ready(self, page) -> bool:
         return self._first_locator(page, selectors=self.UPLOAD_READY_SELECTORS) is not None
@@ -594,3 +594,4 @@ class PixivUploader:
             auto_submit=auto_submit,
             lock_tags=lock_tags,
         )
+
