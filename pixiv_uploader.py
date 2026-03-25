@@ -142,11 +142,25 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
         raise RuntimeError("等待 Pixiv 登录超时")
 
+    def _is_upload_ready(self, page) -> bool:
+        return self._first_locator(page, selectors=self.UPLOAD_READY_SELECTORS) is not None
+
+    def _wait_for_upload_ready(self, page, timeout_seconds: int = 60) -> None:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if "login" in page.url.lower() or self._has_any_text(page, self.LOGIN_TEXTS):
+                self._wait_for_login(page, timeout_seconds=max(10, int(deadline - time.time())))
+                page.goto(self.UPLOAD_URL, wait_until="domcontentloaded")
+            if self._is_upload_ready(page):
+                return
+            page.wait_for_timeout(1000)
+        raise RuntimeError(f"Pixiv upload page did not become ready in time (current page: {page.url})")
+
     def _open_upload_page(self):
         page = self._ensure_page()
         self._wait_for_login(page)
         page.goto(self.UPLOAD_URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
+        self._wait_for_upload_ready(page)
         return page
 
     def _fill_text(self, page, value: str, *, selectors: Iterable[str] = (), labels: Iterable[str] = (), texts: Iterable[str] = ()) -> bool:

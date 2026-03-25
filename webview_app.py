@@ -837,6 +837,7 @@ class WebviewBridge:
             )
 
             upload_mode = str(pixiv_settings.get("upload_mode") or "browser")
+            keep_open = upload_mode != "direct" and not pixiv_settings.get("auto_submit", True)
             if upload_mode == "direct" and not pixiv_settings.get("auto_submit", True):
                 messages.append("[Pixiv] 直传模式不支持停留在投稿页，将按自动投稿执行。")
 
@@ -879,7 +880,6 @@ class WebviewBridge:
                     lock_tags=pixiv_settings["lock_tags"],
                 )
 
-            keep_open = upload_mode != "direct" and not pixiv_settings.get("auto_submit", True)
             if keep_open:
                 self._set_interactive_pixiv_uploader(pixiv_uploader)
                 messages.append("[Pixiv] 浏览器已停在投稿页，检查无误后可手动投稿。")
