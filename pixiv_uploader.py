@@ -397,17 +397,15 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
     def _click_matching_tag_suggestion(self, page, tag: str, current_count: Optional[int]) -> Optional[int]:
         suggestion_container = self._find_tag_suggestion_container(page)
-        container = self._find_tag_container(page)
         hashed_candidate = f"#{tag}"
         roots = []
         if suggestion_container is not None:
             roots.append(("suggestion", suggestion_container))
-        if container is not None and container is not suggestion_container:
-            roots.append(("tag-container", container))
-        roots.append(("page", page.locator("body").first))
+        if not roots:
+            return None
 
         for root_name, root in roots:
-            direct_candidates = [hashed_candidate] if root_name == "suggestion" else [hashed_candidate, tag]
+            direct_candidates = [hashed_candidate, tag]
             for candidate in direct_candidates:
                 for getter in (
                     lambda value: root.get_by_role("option", name=value, exact=True),
@@ -426,11 +424,11 @@ class _BrowserPixivUploader(_BasePixivUploader):
                         return updated_count
                     self._log(f"[Pixiv] Visible suggestion click from {root_name} did not confirm: {tag}")
 
-            dom_candidates = [hashed_candidate] if root_name == "suggestion" else [hashed_candidate, tag]
+            dom_candidates = [hashed_candidate, tag]
             clicked = self._click_exact_tag_text_via_dom(
                 root,
                 dom_candidates,
-                require_hash=(root_name == "suggestion"),
+                require_hash=False,
             )
             if clicked:
                 self._log(f"[Pixiv] Clicked DOM suggestion fallback from {root_name}: {tag}")
@@ -603,8 +601,12 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 raise RuntimeError(f"未找到 Pixiv 标签输入框，无法填写标签：{tag}")
 
             committed = False
-            for strategy in ("Enter", "ArrowDownEnter", "Tab"):
+            for strategy in ("Enter", "RefocusEnter"):
                 locator.click()
+                try:
+                    locator.evaluate("(el) => el.focus()")
+                except Exception:
+                    pass
                 try:
                     locator.press("Control+A")
                     locator.press("Delete")
@@ -616,22 +618,23 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
                 locator.type(tag, delay=10)
                 page.wait_for_timeout(150)
-                if strategy == "ArrowDownEnter":
-                    page.keyboard.press("ArrowDown")
-                    page.wait_for_timeout(120)
-                    page.keyboard.press("Enter")
-                else:
-                    page.keyboard.press(strategy)
+                if strategy == "RefocusEnter":
+                    try:
+                        locator.click()
+                        locator.evaluate("(el) => el.focus()")
+                    except Exception:
+                        pass
+                page.keyboard.press("Enter")
                 updated_count = self._wait_for_tag_count_increment(page, current_count)
                 if current_count is not None and updated_count is not None and updated_count > current_count:
                     current_count = updated_count
                     committed = True
-                    suffix = " via highlighted suggestion" if strategy == "ArrowDownEnter" else ""
+                    suffix = " after refocus" if strategy == "RefocusEnter" else ""
                     self._log(f"[Pixiv] Added tag{suffix}: {tag} ({updated_count}/10)")
                     break
                 if current_count is None:
                     committed = True
-                    suffix = " via highlighted suggestion" if strategy == "ArrowDownEnter" else ""
+                    suffix = " after refocus" if strategy == "RefocusEnter" else ""
                     self._log(f"[Pixiv] Submitted tag{suffix} without count feedback: {tag}")
                     break
                 self._log(f"[Pixiv] Tag strategy {strategy} did not confirm: {tag}")
