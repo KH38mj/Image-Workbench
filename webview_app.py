@@ -2231,8 +2231,8 @@ class WebviewBridge:
 
         if pixiv_settings.get("add_original_tag", True):
             fixed_tags.append("オリジナル")
-        if pixiv_settings.get("ai_generated", False):
-            fixed_tags.append("AIイラスト")
+        if pixiv_settings.get("ai_generated", False) and info_messages is not None:
+            info_messages.append("已启用 Pixiv 的 AI 生成作品字段，自动标签中不再额外追加 AIイラスト。")
 
         if pipeline_settings["upscale"]["enabled"]:
             engine = normalize_upscale_engine(pipeline_settings["upscale"]["engine"])
