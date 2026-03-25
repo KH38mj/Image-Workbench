@@ -184,6 +184,7 @@ function cacheRefs() {
     'loadPixivLlmModelsBtn',
     'testPixivLlmBtn',
     'previewPixivBtn',
+    'testPixivUploadBtn',
     'pixivLlmModelPreset',
     'pixivLlmModelCustom',
     'pixivLlmTemperature',
@@ -256,6 +257,7 @@ function bindEvents() {
   refs.loadPixivLlmModelsBtn.addEventListener('click', onLoadPixivLlmModels);
   refs.testPixivLlmBtn.addEventListener('click', onTestPixivLlm);
   refs.previewPixivBtn.addEventListener('click', onPreviewPixivSubmission);
+  refs.testPixivUploadBtn.addEventListener('click', onTestPixivUploadCurrent);
   refs.startBatchBtn.addEventListener('click', onStartBatch);
   refs.stopBatchBtn.addEventListener('click', onStopBatch);
   refs.renderPreviewBtn.addEventListener('click', onRenderPreview);
@@ -1048,6 +1050,24 @@ async function onPreviewPixivSubmission() {
   syncPixivFieldState();
 }
 
+async function onTestPixivUploadCurrent() {
+  refs.testPixivUploadBtn.disabled = true;
+  updateStatusBadge('Status: Opening Pixiv draft');
+  const result = await window.pywebview.api.test_pixiv_upload_current(buildSettings());
+  if (!result.ok) {
+    pushLog(result.error || 'Pixiv upload test failed');
+    updateStatusBadge('Status: Pixiv upload test failed');
+    refs.testPixivUploadBtn.disabled = false;
+    syncPixivFieldState();
+    return;
+  }
+
+  (result.logs || []).forEach((message) => pushLog(message));
+  updateStatusBadge(`Status: ${result.message || 'Pixiv draft ready'}`);
+  refs.testPixivUploadBtn.disabled = false;
+  syncPixivFieldState();
+}
+
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
   updateStatusBadge('Status: Testing Pixiv LLM');
@@ -1290,6 +1310,8 @@ function syncPixivFieldState() {
   refs.pixivLlmPromptMetadata.disabled = !enabled || !llmEnabled;
   refs.pixivLlmPromptImage.disabled = !enabled || !llmEnabled;
   refs.testPixivLlmBtn.disabled = !enabled || !llmEnabled;
+  refs.previewPixivBtn.disabled = !enabled;
+  refs.testPixivUploadBtn.disabled = !enabled;
   updatePixivModeHint();
 }
 
