@@ -246,10 +246,10 @@ class _BrowserPixivUploader(_BasePixivUploader):
         candidates = [f"#{tag}", tag]
         for candidate in candidates:
             for getter in (
-                lambda value: container.get_by_text(value, exact=True),
                 lambda value: container.get_by_role("option", name=value, exact=True),
                 lambda value: container.get_by_role("link", name=value, exact=True),
                 lambda value: container.get_by_role("button", name=value, exact=True),
+                lambda value: container.get_by_text(value, exact=True),
             ):
                 locator = getter(candidate)
                 if self._count(locator) <= 0:
@@ -424,7 +424,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 raise RuntimeError(f"未找到 Pixiv 标签输入框，无法填写标签：{tag}")
 
             committed = False
-            for key in ("Enter", "Tab"):
+            for strategy in ("Enter", "ArrowDownEnter", "Tab"):
                 locator.click()
                 try:
                     locator.press("Control+A")
@@ -437,18 +437,25 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
                 locator.type(tag, delay=10)
                 page.wait_for_timeout(150)
-                locator.press(key)
+                if strategy == "ArrowDownEnter":
+                    locator.press("ArrowDown")
+                    page.wait_for_timeout(120)
+                    page.keyboard.press("Enter")
+                else:
+                    locator.press(strategy)
                 page.wait_for_timeout(450)
 
                 updated_count = self._read_tag_count(page)
                 if current_count is not None and updated_count is not None and updated_count > current_count:
                     current_count = updated_count
                     committed = True
-                    self._log(f"[Pixiv] Added tag: {tag} ({updated_count}/10)")
+                    suffix = " via highlighted suggestion" if strategy == "ArrowDownEnter" else ""
+                    self._log(f"[Pixiv] Added tag{suffix}: {tag} ({updated_count}/10)")
                     break
                 if current_count is None:
                     committed = True
-                    self._log(f"[Pixiv] Submitted tag without count feedback: {tag}")
+                    suffix = " via highlighted suggestion" if strategy == "ArrowDownEnter" else ""
+                    self._log(f"[Pixiv] Submitted tag{suffix} without count feedback: {tag}")
                     break
 
             if not committed and self._click_matching_tag_suggestion(page, tag):
