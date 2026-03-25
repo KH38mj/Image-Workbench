@@ -241,65 +241,88 @@ class _BrowserPixivUploader(_BasePixivUploader):
         except Exception:
             return None
 
+    def _wait_for_tag_count_increment(self, page, current_count: Optional[int], timeout_ms: int = 1200) -> Optional[int]:
+        if current_count is None:
+            page.wait_for_timeout(min(timeout_ms, 400))
+            return self._read_tag_count(page)
+
+        deadline = time.time() + (timeout_ms / 1000)
+        while time.time() < deadline:
+            updated_count = self._read_tag_count(page)
+            if updated_count is not None and updated_count > current_count:
+                return updated_count
+            page.wait_for_timeout(120)
+        return self._read_tag_count(page)
+
     def _click_matching_tag_suggestion(self, page, tag: str) -> bool:
         container = self._find_tag_container(page)
         candidates = [f"#{tag}", tag]
-        for candidate in candidates:
-            for getter in (
-                lambda value: (container or page).get_by_role("option", name=value, exact=True),
-                lambda value: (container or page).get_by_role("link", name=value, exact=True),
-                lambda value: (container or page).get_by_role("button", name=value, exact=True),
-                lambda value: (container or page).get_by_text(value, exact=True),
-            ):
-                locator = getter(candidate)
-                if self._count(locator) <= 0:
-                    continue
-                try:
-                    locator.first.click()
-                    return True
-                except Exception:
-                    continue
+        roots = []
+        if container is not None:
+            roots.append(container)
+        roots.append(page.locator("body").first)
 
-        root = container or page.locator("body").first
-        try:
-            return bool(
-                root.evaluate(
-                    """(node, values) => {
-                        const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
-                        const wanted = values.map(normalize).filter(Boolean);
-                        if (!wanted.length) return false;
+        for root in roots:
+            for candidate in candidates:
+                for getter in (
+                    lambda value: root.get_by_role("option", name=value, exact=True),
+                    lambda value: root.get_by_role("link", name=value, exact=True),
+                    lambda value: root.get_by_role("button", name=value, exact=True),
+                    lambda value: root.get_by_text(value, exact=True),
+                ):
+                    locator = getter(candidate)
+                    if self._count(locator) <= 0:
+                        continue
+                    try:
+                        locator.first.click()
+                        self._log(f"[Pixiv] Clicked visible suggestion candidate: {candidate}")
+                        return True
+                    except Exception:
+                        continue
 
-                        const clickTarget = (element) => {
-                            if (!element) return false;
-                            const target = element.closest('button, a, [role=\"option\"], [role=\"button\"], [role=\"link\"], li, div, span') || element;
-                            try {
-                                target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                                target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-                                target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-                                target.click();
-                                return true;
-                            } catch (err) {
-                                return false;
-                            }
-                        };
+            try:
+                clicked = bool(
+                    root.evaluate(
+                        """(node, values) => {
+                            const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                            const wanted = values.map(normalize).filter(Boolean);
+                            if (!wanted.length) return false;
 
-                        const interactive = Array.from(node.querySelectorAll('button, a, [role=\"option\"], [role=\"button\"], [role=\"link\"], li, div, span'));
-                        for (const value of wanted) {
-                            for (const element of interactive) {
-                                const text = normalize(element.textContent);
-                                if (!text) continue;
-                                if (text === value || text.startsWith(value + ' ') || text.includes(value)) {
-                                    if (clickTarget(element)) return true;
+                            const clickTarget = (element) => {
+                                if (!element) return false;
+                                const target = element.closest('button, a, [role=\"option\"], [role=\"button\"], [role=\"link\"], li, div, span') || element;
+                                try {
+                                    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                                    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                                    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                                    target.click();
+                                    return true;
+                                } catch (err) {
+                                    return false;
+                                }
+                            };
+
+                            const interactive = Array.from(node.querySelectorAll('button, a, [role=\"option\"], [role=\"button\"], [role=\"link\"], li, div, span'));
+                            for (const value of wanted) {
+                                for (const element of interactive) {
+                                    const text = normalize(element.textContent);
+                                    if (!text) continue;
+                                    if (text === value || text.startsWith(value + ' ') || text.includes(value)) {
+                                        if (clickTarget(element)) return true;
+                                    }
                                 }
                             }
-                        }
-                        return false;
-                    }""",
-                    candidates,
+                            return false;
+                        }""",
+                        candidates,
+                    )
                 )
-            )
-        except Exception:
-            return False
+                if clicked:
+                    self._log(f"[Pixiv] Clicked DOM suggestion fallback for: {tag}")
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _is_login_required(self, page) -> bool:
         if self._is_upload_ready(page):
@@ -483,9 +506,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
                     page.keyboard.press("Enter")
                 else:
                     locator.press(strategy)
-                page.wait_for_timeout(450)
-
-                updated_count = self._read_tag_count(page)
+                updated_count = self._wait_for_tag_count_increment(page, current_count)
                 if current_count is not None and updated_count is not None and updated_count > current_count:
                     current_count = updated_count
                     committed = True
@@ -497,10 +518,10 @@ class _BrowserPixivUploader(_BasePixivUploader):
                     suffix = " via highlighted suggestion" if strategy == "ArrowDownEnter" else ""
                     self._log(f"[Pixiv] Submitted tag{suffix} without count feedback: {tag}")
                     break
+                self._log(f"[Pixiv] Tag strategy {strategy} did not confirm: {tag}")
 
             if not committed and self._click_matching_tag_suggestion(page, tag):
-                page.wait_for_timeout(450)
-                updated_count = self._read_tag_count(page)
+                updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
                 if current_count is not None and updated_count is not None and updated_count > current_count:
                     current_count = updated_count
                     committed = True
