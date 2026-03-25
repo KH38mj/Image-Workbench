@@ -1,4 +1,4 @@
-﻿import importlib.util
+import importlib.util
 import mimetypes
 import subprocess
 import sys
@@ -594,4 +594,3 @@ class PixivUploader:
             auto_submit=auto_submit,
             lock_tags=lock_tags,
         )
-
