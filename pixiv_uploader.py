@@ -574,11 +574,11 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 locator.type(tag, delay=10)
                 page.wait_for_timeout(150)
                 if strategy == "ArrowDownEnter":
-                    locator.press("ArrowDown")
+                    page.keyboard.press("ArrowDown")
                     page.wait_for_timeout(120)
                     page.keyboard.press("Enter")
                 else:
-                    locator.press(strategy)
+                    page.keyboard.press(strategy)
                 updated_count = self._wait_for_tag_count_increment(page, current_count)
                 if current_count is not None and updated_count is not None and updated_count > current_count:
                     current_count = updated_count
