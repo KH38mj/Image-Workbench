@@ -241,6 +241,26 @@ class _BrowserPixivUploader(_BasePixivUploader):
         except Exception:
             return None
 
+    def _click_matching_tag_suggestion(self, page, tag: str) -> bool:
+        container = self._find_tag_container(page) or page
+        candidates = [f"#{tag}", tag]
+        for candidate in candidates:
+            for getter in (
+                lambda value: container.get_by_text(value, exact=True),
+                lambda value: container.get_by_role("option", name=value, exact=True),
+                lambda value: container.get_by_role("link", name=value, exact=True),
+                lambda value: container.get_by_role("button", name=value, exact=True),
+            ):
+                locator = getter(candidate)
+                if self._count(locator) <= 0:
+                    continue
+                try:
+                    locator.first.click()
+                    return True
+                except Exception:
+                    continue
+        return False
+
     def _is_login_required(self, page) -> bool:
         if self._is_upload_ready(page):
             return False
@@ -430,6 +450,14 @@ class _BrowserPixivUploader(_BasePixivUploader):
                     committed = True
                     self._log(f"[Pixiv] Submitted tag without count feedback: {tag}")
                     break
+
+            if not committed and self._click_matching_tag_suggestion(page, tag):
+                page.wait_for_timeout(450)
+                updated_count = self._read_tag_count(page)
+                if current_count is not None and updated_count is not None and updated_count > current_count:
+                    current_count = updated_count
+                    committed = True
+                    self._log(f"[Pixiv] Added tag via suggestion: {tag} ({updated_count}/10)")
 
             if not committed:
                 raise RuntimeError(f"Pixiv 未确认标签：{tag}")
