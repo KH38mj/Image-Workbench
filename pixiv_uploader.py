@@ -39,6 +39,12 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
     UPLOAD_URL = "https://www.pixiv.net/upload.php"
     LOGIN_TEXTS = ["Login", "Log in", "ログイン", "登录", "登入"]
+    UPLOAD_READY_SELECTORS = [
+        "input[type='file']",
+        "input[placeholder*='title' i]",
+        "textarea[placeholder*='caption' i]",
+        "textarea[placeholder*='description' i]",
+    ]
 
     def __init__(self, settings: dict, log_fn: Optional[Callable[[str], None]] = None):
         super().__init__(settings, log_fn=log_fn)
