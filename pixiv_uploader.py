@@ -305,33 +305,46 @@ class _BrowserPixivUploader(_BasePixivUploader):
         if not tags:
             return True
 
-        locator = self._first_fillable_locator(
-            page,
-            selectors=[
-                "input[name*='tag' i]:not([type='checkbox'])",
-                "input[id*='tag' i]:not([type='checkbox'])",
-                "input[placeholder*='tag' i]",
-                "input[placeholder*='Tag' i]",
-                "input[placeholder*='タグ']",
-                "input[placeholder*='标签']",
-                "input[aria-label*='tag' i]",
-                "input[aria-label*='タグ']",
-                "input[aria-label*='标签']",
-                "[role='combobox']",
-            ],
-            labels=["Tags", "Tag", "タグ", "标签"],
-            texts=["Tags", "Tag", "タグ", "标签"],
-        )
-        if locator is None:
-            return False
+        selectors = [
+            "input[name*='tag' i]:not([type='checkbox'])",
+            "input[id*='tag' i]:not([type='checkbox'])",
+            "input[placeholder*='tag' i]",
+            "input[placeholder*='Tag' i]",
+            "input[placeholder*='タグ']",
+            "input[placeholder*='标签']",
+            "input[aria-label*='tag' i]",
+            "input[aria-label*='タグ']",
+            "input[aria-label*='标签']",
+            "[role='combobox']",
+        ]
+        labels = ["Tags", "Tag", "タグ", "标签"]
 
         for tag in tags:
+            locator = self._first_fillable_locator(
+                page,
+                selectors=selectors,
+                labels=labels,
+                texts=labels,
+            )
+            if locator is None:
+                return False
             locator.click()
             locator.fill("")
             locator.type(tag, delay=10)
-            page.keyboard.press("Enter")
-            page.wait_for_timeout(120)
+            locator.press("Enter")
+            page.wait_for_timeout(250)
         return True
+
+    def _set_ai_generated_choice(self, page, enabled: bool) -> bool:
+        desired = (
+            ["Yes", "是", "有", "あり"]
+            if enabled
+            else ["No", "否", "无", "なし"]
+        )
+        return self._set_choice(page, "enabled" if enabled else "disabled", {
+            "enabled": desired,
+            "disabled": desired,
+        })
 
     def _set_choice(self, page, value: str, mapping: dict) -> bool:
         if value not in mapping:
@@ -397,7 +410,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
             ],
         )
 
-        self._set_toggle(page, ai_generated, ["AI-generated work", "AI生成作品", "AI生成"])
+        self._set_ai_generated_choice(page, ai_generated)
 
         self._set_choice(
             page,
