@@ -242,14 +242,14 @@ class _BrowserPixivUploader(_BasePixivUploader):
             return None
 
     def _click_matching_tag_suggestion(self, page, tag: str) -> bool:
-        container = self._find_tag_container(page) or page
+        container = self._find_tag_container(page)
         candidates = [f"#{tag}", tag]
         for candidate in candidates:
             for getter in (
-                lambda value: container.get_by_role("option", name=value, exact=True),
-                lambda value: container.get_by_role("link", name=value, exact=True),
-                lambda value: container.get_by_role("button", name=value, exact=True),
-                lambda value: container.get_by_text(value, exact=True),
+                lambda value: (container or page).get_by_role("option", name=value, exact=True),
+                lambda value: (container or page).get_by_role("link", name=value, exact=True),
+                lambda value: (container or page).get_by_role("button", name=value, exact=True),
+                lambda value: (container or page).get_by_text(value, exact=True),
             ):
                 locator = getter(candidate)
                 if self._count(locator) <= 0:
@@ -259,7 +259,47 @@ class _BrowserPixivUploader(_BasePixivUploader):
                     return True
                 except Exception:
                     continue
-        return False
+
+        root = container or page.locator("body").first
+        try:
+            return bool(
+                root.evaluate(
+                    """(node, values) => {
+                        const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                        const wanted = values.map(normalize).filter(Boolean);
+                        if (!wanted.length) return false;
+
+                        const clickTarget = (element) => {
+                            if (!element) return false;
+                            const target = element.closest('button, a, [role=\"option\"], [role=\"button\"], [role=\"link\"], li, div, span') || element;
+                            try {
+                                target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                                target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                                target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                                target.click();
+                                return true;
+                            } catch (err) {
+                                return false;
+                            }
+                        };
+
+                        const interactive = Array.from(node.querySelectorAll('button, a, [role=\"option\"], [role=\"button\"], [role=\"link\"], li, div, span'));
+                        for (const value of wanted) {
+                            for (const element of interactive) {
+                                const text = normalize(element.textContent);
+                                if (!text) continue;
+                                if (text === value || text.startsWith(value + ' ') || text.includes(value)) {
+                                    if (clickTarget(element)) return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }""",
+                    candidates,
+                )
+            )
+        except Exception:
+            return False
 
     def _is_login_required(self, page) -> bool:
         if self._is_upload_ready(page):
