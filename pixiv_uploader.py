@@ -298,19 +298,70 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 continue
         return False
 
+    def _click_exact_tag_text_via_dom(self, root, candidates: List[str], *, require_hash: bool = False) -> bool:
+        try:
+            clicked = bool(
+                root.evaluate(
+                    """(node, payload) => {
+                        const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                        const wanted = (payload.values || []).map(normalize).filter(Boolean);
+                        const requireHash = !!payload.requireHash;
+                        if (!wanted.length) return false;
+
+                        const isEditable = (element) =>
+                            !!element.closest('input, textarea, [contenteditable="true"], [role="textbox"], [role="searchbox"]');
+
+                        const interactiveSelector = 'a, button, [role="option"], [role="button"], [role="link"], li, span, div';
+                        const elements = Array.from(node.querySelectorAll(interactiveSelector));
+
+                        const tryClick = (element) => {
+                            const target =
+                                element.closest('button, a, [role="option"], [role="button"], [role="link"], [tabindex]') || element;
+                            try {
+                                target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                                target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                                target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                                target.click();
+                                return true;
+                            } catch (err) {
+                                return false;
+                            }
+                        };
+
+                        for (const element of elements) {
+                            if (isEditable(element)) continue;
+                            const text = normalize(element.textContent);
+                            if (!text) continue;
+                            if (requireHash && !text.startsWith('#')) continue;
+                            for (const value of wanted) {
+                                if (text === value) {
+                                    if (tryClick(element)) return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }""",
+                    {"values": candidates, "requireHash": require_hash},
+                )
+            )
+            return clicked
+        except Exception:
+            return False
+
     def _click_matching_tag_suggestion(self, page, tag: str, current_count: Optional[int]) -> Optional[int]:
         suggestion_container = self._find_tag_suggestion_container(page)
         container = self._find_tag_container(page)
-        candidates = [f"#{tag}", tag]
+        hashed_candidate = f"#{tag}"
         roots = []
         if suggestion_container is not None:
-            roots.append(suggestion_container)
+            roots.append(("suggestion", suggestion_container))
         if container is not None and container is not suggestion_container:
-            roots.append(container)
-        roots.append(page.locator("body").first)
+            roots.append(("tag-container", container))
+        roots.append(("page", page.locator("body").first))
 
-        for root in roots:
-            for candidate in candidates:
+        for root_name, root in roots:
+            direct_candidates = [hashed_candidate] if root_name == "suggestion" else [hashed_candidate, tag]
+            for candidate in direct_candidates:
                 for getter in (
                     lambda value: root.get_by_role("option", name=value, exact=True),
                     lambda value: root.get_by_role("link", name=value, exact=True),
@@ -322,62 +373,28 @@ class _BrowserPixivUploader(_BasePixivUploader):
                         continue
                     if not self._click_locator_or_interactive_ancestor(locator):
                         continue
-                    self._log(f"[Pixiv] Clicked visible suggestion candidate: {candidate}")
+                    self._log(f"[Pixiv] Clicked visible suggestion candidate from {root_name}: {candidate}")
                     updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
                     if current_count is not None and updated_count is not None and updated_count > current_count:
                         return updated_count
                     if current_count is None:
                         return updated_count
-                    self._log(f"[Pixiv] Visible suggestion click did not confirm: {tag}")
+                    self._log(f"[Pixiv] Visible suggestion click from {root_name} did not confirm: {tag}")
 
-            try:
-                clicked = bool(
-                    root.evaluate(
-                        """(node, values) => {
-                            const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
-                            const wanted = values.map(normalize).filter(Boolean);
-                            if (!wanted.length) return false;
-
-                            const clickTarget = (element) => {
-                                if (!element) return false;
-                                const target = element.closest('button, a, [role=\"option\"], [role=\"button\"], [role=\"link\"], li, div, span') || element;
-                                try {
-                                    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                                    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-                                    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-                                    target.click();
-                                    return true;
-                                } catch (err) {
-                                    return false;
-                                }
-                            };
-
-                            const interactive = Array.from(node.querySelectorAll('button, a, [role=\"option\"], [role=\"button\"], [role=\"link\"], li, div, span'));
-                            for (const value of wanted) {
-                                for (const element of interactive) {
-                                    const text = normalize(element.textContent);
-                                    if (!text) continue;
-                                    if (element.closest('input, textarea, [contenteditable=\"true\"], [role=\"textbox\"], [role=\"searchbox\"]')) continue;
-                                    if (text === value || text.startsWith(value + ' ') || text.includes(value)) {
-                                        if (clickTarget(element)) return true;
-                                    }
-                                }
-                            }
-                            return false;
-                        }""",
-                        candidates,
-                    )
-                )
-                if clicked:
-                    self._log(f"[Pixiv] Clicked DOM suggestion fallback for: {tag}")
-                    updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
-                    if current_count is not None and updated_count is not None and updated_count > current_count:
-                        return updated_count
-                    if current_count is None:
-                        return updated_count
-                    self._log(f"[Pixiv] DOM suggestion fallback did not confirm: {tag}")
-            except Exception:
-                continue
+            dom_candidates = [hashed_candidate] if root_name == "suggestion" else [hashed_candidate, tag]
+            clicked = self._click_exact_tag_text_via_dom(
+                root,
+                dom_candidates,
+                require_hash=(root_name == "suggestion"),
+            )
+            if clicked:
+                self._log(f"[Pixiv] Clicked DOM suggestion fallback from {root_name}: {tag}")
+                updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
+                if current_count is not None and updated_count is not None and updated_count > current_count:
+                    return updated_count
+                if current_count is None:
+                    return updated_count
+                self._log(f"[Pixiv] DOM suggestion fallback from {root_name} did not confirm: {tag}")
         return None
 
     def _is_login_required(self, page) -> bool:
