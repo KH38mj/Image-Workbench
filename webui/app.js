@@ -1055,6 +1055,7 @@ async function onTestPixivUploadCurrent() {
   updateStatusBadge('Status: Opening Pixiv draft');
   const result = await window.pywebview.api.test_pixiv_upload_current(buildSettings());
   if (!result.ok) {
+    (result.logs || []).forEach((message) => pushLog(message));
     pushLog(result.error || 'Pixiv upload test failed');
     updateStatusBadge('Status: Pixiv upload test failed');
     refs.testPixivUploadBtn.disabled = false;

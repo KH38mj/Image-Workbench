@@ -139,14 +139,19 @@ class _BrowserPixivUploader(_BasePixivUploader):
         if "login" not in page.url.lower() and not self._has_any_text(page, self.LOGIN_TEXTS):
             return
 
-        self._log("[Pixiv] 请先在浏览器里完成登录，登录成功后程序会继续。")
+        self._log("[Pixiv] ?????????????? Pixiv?")
+        if not self.settings.get("auto_submit", True):
+            self._log("[Pixiv] ???????????????????????? Open Pixiv Draft?")
+            raise RuntimeError("Pixiv ???????????????????? Open Pixiv Draft")
+
+        self._log("[Pixiv] ???????????????????????")
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             page.wait_for_timeout(1000)
             if "login" not in page.url.lower() and not self._has_any_text(page, self.LOGIN_TEXTS):
                 return
 
-        raise RuntimeError("等待 Pixiv 登录超时")
+        raise RuntimeError("?? Pixiv ????")
 
     def _is_upload_ready(self, page) -> bool:
         return self._first_locator(page, selectors=self.UPLOAD_READY_SELECTORS) is not None

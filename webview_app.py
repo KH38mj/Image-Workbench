@@ -893,7 +893,12 @@ class WebviewBridge:
                 "message": "已完成当前图片的 Pixiv 上传测试",
             }
         except Exception as exc:
-            return self._error_response(exc)
+            return {
+                "ok": False,
+                "error": str(exc),
+                "logs": messages if "messages" in locals() else [],
+                "traceback": traceback.format_exc(),
+            }
         finally:
             if pixiv_uploader is not None and not keep_open:
                 try:
