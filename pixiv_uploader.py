@@ -144,7 +144,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
             contenteditable = str(locator.get_attribute("contenteditable") or "").lower()
             role = str(locator.get_attribute("role") or "").lower()
-            return contenteditable == "true" or role in {"textbox", "combobox", "searchbox"}
+            return contenteditable == "true" or role in {"textbox", "searchbox"}
         except Exception:
             return False
 
@@ -158,7 +158,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
 
         descendant_selector = (
             "input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='hidden']), "
-            "textarea, [contenteditable='true'], [role='textbox'], [role='combobox'], [role='searchbox']"
+            "textarea, [contenteditable='true'], [role='textbox'], [role='searchbox']"
         )
         try:
             descendants = primary.locator(descendant_selector)
@@ -193,6 +193,21 @@ class _BrowserPixivUploader(_BasePixivUploader):
             if self._count(locator) > 0:
                 return True
         return False
+
+    def _find_group_container(self, page, group_labels: Iterable[str]):
+        for label in group_labels:
+            title_locator = page.get_by_text(label, exact=False)
+            if self._count(title_locator) <= 0:
+                continue
+            try:
+                container = title_locator.first.locator(
+                    "xpath=ancestor::*[self::section or self::fieldset or self::div][.//input[@type='radio' or @type='checkbox']][1]"
+                )
+                if self._count(container) > 0:
+                    return container.first
+            except Exception:
+                continue
+        return None
 
     def _is_login_required(self, page) -> bool:
         if self._is_upload_ready(page):
@@ -277,6 +292,26 @@ class _BrowserPixivUploader(_BasePixivUploader):
                     return True
         return False
 
+    def _click_choice_in_group(self, group, candidates: Iterable[str]) -> bool:
+        for text in candidates:
+            for getter in (
+                lambda value: group.get_by_role("radio", name=value, exact=False),
+                lambda value: group.get_by_role("checkbox", name=value, exact=False),
+                lambda value: group.get_by_label(value, exact=False),
+                lambda value: group.get_by_text(value, exact=False),
+            ):
+                locator = getter(text)
+                if self._count(locator) > 0:
+                    try:
+                        locator.first.click()
+                    except Exception:
+                        try:
+                            locator.first.check(force=True)
+                        except Exception:
+                            return False
+                    return True
+        return False
+
     def _set_toggle(self, page, enabled: bool, labels: Iterable[str]) -> bool:
         locator = self._first_locator(page, labels=labels, texts=labels)
         if locator is None:
@@ -306,6 +341,9 @@ class _BrowserPixivUploader(_BasePixivUploader):
             return True
 
         selectors = [
+            "[role='combobox'] input:not([type='checkbox'])",
+            "[role='combobox'] textarea",
+            "[role='combobox'] [contenteditable='true']",
             "input[name*='tag' i]:not([type='checkbox'])",
             "input[id*='tag' i]:not([type='checkbox'])",
             "input[placeholder*='tag' i]",
@@ -331,24 +369,23 @@ class _BrowserPixivUploader(_BasePixivUploader):
             locator.click()
             locator.fill("")
             locator.type(tag, delay=10)
-            locator.press("Enter")
-            page.wait_for_timeout(250)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(350)
         return True
 
     def _set_ai_generated_choice(self, page, enabled: bool) -> bool:
-        desired = (
-            ["Yes", "是", "有", "あり"]
-            if enabled
-            else ["No", "否", "无", "なし"]
-        )
-        return self._set_choice(page, "enabled" if enabled else "disabled", {
-            "enabled": desired,
-            "disabled": desired,
-        })
+        desired = ["Yes", "是", "あり"] if enabled else ["No", "否", "なし"]
+        group = self._find_group_container(page, ["AI生成作品", "AI-generated work", "AI生成"])
+        if group is not None and self._click_choice_in_group(group, desired):
+            return True
+        return self._click_text(page, desired)
 
-    def _set_choice(self, page, value: str, mapping: dict) -> bool:
+    def _set_choice(self, page, value: str, mapping: dict, *, group_labels: Iterable[str] = ()) -> bool:
         if value not in mapping:
             return False
+        group = self._find_group_container(page, group_labels)
+        if group is not None and self._click_choice_in_group(group, mapping[value]):
+            return True
         return self._click_text(page, mapping[value])
 
     def upload_image(
@@ -420,6 +457,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 "R-18": ["R-18"],
                 "R-18G": ["R-18G"],
             },
+            group_labels=["年龄限制", "Age restriction", "年齢制限"],
         )
         self._set_choice(
             page,
@@ -429,6 +467,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 "mypixiv": ["My pixiv only", "MyPixiv", "My pixiv"],
                 "private": ["Private", "非公开"],
             },
+            group_labels=["公开范围", "Visibility", "公開範囲"],
         )
 
         if auto_submit:
