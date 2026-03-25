@@ -225,6 +225,28 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 continue
         return None
 
+    def _find_tag_suggestion_container(self, page):
+        tag_container = self._find_tag_container(page)
+        search_roots = [tag_container] if tag_container is not None else []
+        search_roots.append(page.locator("body").first)
+
+        for root in search_roots:
+            if root is None:
+                continue
+            for label in ("推荐标签", "おすすめタグ", "Suggested tags", "Recommended tags"):
+                locator = root.get_by_text(label, exact=False)
+                if self._count(locator) <= 0:
+                    continue
+                try:
+                    container = locator.first.locator(
+                        "xpath=ancestor::*[self::section or self::fieldset or self::div][.//a or .//button or .//*[@role='option'] or .//*[@role='link']][1]"
+                    )
+                    if self._count(container) > 0:
+                        return container.first
+                except Exception:
+                    continue
+        return None
+
     def _read_tag_count(self, page) -> Optional[int]:
         container = self._find_tag_container(page)
         if container is None:
@@ -255,10 +277,13 @@ class _BrowserPixivUploader(_BasePixivUploader):
         return self._read_tag_count(page)
 
     def _click_matching_tag_suggestion(self, page, tag: str) -> bool:
+        suggestion_container = self._find_tag_suggestion_container(page)
         container = self._find_tag_container(page)
         candidates = [f"#{tag}", tag]
         roots = []
-        if container is not None:
+        if suggestion_container is not None:
+            roots.append(suggestion_container)
+        if container is not None and container is not suggestion_container:
             roots.append(container)
         roots.append(page.locator("body").first)
 
@@ -307,6 +332,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
                                 for (const element of interactive) {
                                     const text = normalize(element.textContent);
                                     if (!text) continue;
+                                    if (element.closest('input, textarea, [contenteditable=\"true\"], [role=\"textbox\"], [role=\"searchbox\"]')) continue;
                                     if (text === value || text.startsWith(value + ' ') || text.includes(value)) {
                                         if (clickTarget(element)) return true;
                                     }
