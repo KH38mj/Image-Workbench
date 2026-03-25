@@ -276,7 +276,29 @@ class _BrowserPixivUploader(_BasePixivUploader):
             page.wait_for_timeout(120)
         return self._read_tag_count(page)
 
-    def _click_matching_tag_suggestion(self, page, tag: str) -> bool:
+    def _click_locator_or_interactive_ancestor(self, locator) -> bool:
+        if locator is None or self._count(locator) <= 0:
+            return False
+
+        target = locator.first
+        try:
+            interactive = target.locator(
+                "xpath=ancestor-or-self::*[self::button or self::a or @role='option' or @role='button' or @role='link' or @tabindex][1]"
+            )
+            if self._count(interactive) > 0:
+                target = interactive.first
+        except Exception:
+            pass
+
+        for kwargs in ({"force": True}, {}):
+            try:
+                target.click(**kwargs)
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _click_matching_tag_suggestion(self, page, tag: str, current_count: Optional[int]) -> Optional[int]:
         suggestion_container = self._find_tag_suggestion_container(page)
         container = self._find_tag_container(page)
         candidates = [f"#{tag}", tag]
@@ -298,12 +320,15 @@ class _BrowserPixivUploader(_BasePixivUploader):
                     locator = getter(candidate)
                     if self._count(locator) <= 0:
                         continue
-                    try:
-                        locator.first.click()
-                        self._log(f"[Pixiv] Clicked visible suggestion candidate: {candidate}")
-                        return True
-                    except Exception:
+                    if not self._click_locator_or_interactive_ancestor(locator):
                         continue
+                    self._log(f"[Pixiv] Clicked visible suggestion candidate: {candidate}")
+                    updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
+                    if current_count is not None and updated_count is not None and updated_count > current_count:
+                        return updated_count
+                    if current_count is None:
+                        return updated_count
+                    self._log(f"[Pixiv] Visible suggestion click did not confirm: {tag}")
 
             try:
                 clicked = bool(
@@ -345,10 +370,15 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 )
                 if clicked:
                     self._log(f"[Pixiv] Clicked DOM suggestion fallback for: {tag}")
-                    return True
+                    updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
+                    if current_count is not None and updated_count is not None and updated_count > current_count:
+                        return updated_count
+                    if current_count is None:
+                        return updated_count
+                    self._log(f"[Pixiv] DOM suggestion fallback did not confirm: {tag}")
             except Exception:
                 continue
-        return False
+        return None
 
     def _is_login_required(self, page) -> bool:
         if self._is_upload_ready(page):
@@ -546,12 +576,15 @@ class _BrowserPixivUploader(_BasePixivUploader):
                     break
                 self._log(f"[Pixiv] Tag strategy {strategy} did not confirm: {tag}")
 
-            if not committed and self._click_matching_tag_suggestion(page, tag):
-                updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1500)
+            if not committed:
+                updated_count = self._click_matching_tag_suggestion(page, tag, current_count)
                 if current_count is not None and updated_count is not None and updated_count > current_count:
                     current_count = updated_count
                     committed = True
                     self._log(f"[Pixiv] Added tag via suggestion: {tag} ({updated_count}/10)")
+                elif current_count is None and updated_count is not None:
+                    committed = True
+                    self._log(f"[Pixiv] Added tag via suggestion without count feedback: {tag}")
 
             if not committed:
                 raise RuntimeError(f"Pixiv 未确认标签：{tag}")
