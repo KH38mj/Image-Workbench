@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import mimetypes
 import re
 import subprocess
@@ -34,6 +35,9 @@ class _BasePixivUploader:
     def close(self) -> None:
         return None
 
+    def capture_debug_snapshot(self, tag_hint: str = "") -> dict:
+        raise RuntimeError("当前 Pixiv 上传模式不支持调试快照。")
+
 
 class _BrowserPixivUploader(_BasePixivUploader):
     """Best-effort Pixiv uploader driven by browser automation."""
@@ -52,6 +56,28 @@ class _BrowserPixivUploader(_BasePixivUploader):
         "input[placeholder*='title' i]",
         "textarea[placeholder*='caption' i]",
         "textarea[placeholder*='description' i]",
+    ]
+    TAG_INPUT_SELECTORS = [
+        "[role='combobox'] input:not([type='checkbox'])",
+        "[role='combobox'] textarea",
+        "[role='combobox'] [contenteditable='true']",
+        "input[name*='tag' i]:not([type='checkbox'])",
+        "input[id*='tag' i]:not([type='checkbox'])",
+        "input[placeholder*='tag' i]",
+        "input[placeholder*='Tag' i]",
+        "input[placeholder*='銈裤偘']",
+        "input[placeholder*='鏍囩']",
+        "input[aria-label*='tag' i]",
+        "input[aria-label*='銈裤偘']",
+        "input[aria-label*='鏍囩']",
+        "[role='combobox']",
+    ]
+    TAG_INPUT_LABELS = ["Tags", "Tag", "銈裤偘", "鏍囩"]
+    TAG_AUTOCOMPLETE_SELECTORS = [
+        "[role='listbox'] [role='option']",
+        "[role='listbox'] button",
+        "[role='presentation'] [role='option']",
+        "[aria-controls][role='combobox'] ~ [role='listbox'] [role='option']",
     ]
 
     def __init__(self, settings: dict, log_fn: Optional[Callable[[str], None]] = None):
@@ -109,6 +135,124 @@ class _BrowserPixivUploader(_BasePixivUploader):
         self._context = self._playwright.chromium.launch_persistent_context(**launch_kwargs)
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         return self._page
+
+    def _debug_dir(self) -> Path:
+        out_dir = Path(__file__).parent / "tmp_pixiv_diag"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+
+    def _locator_outer_html(self, locator) -> str:
+        if locator is None or self._count(locator) <= 0:
+            return ""
+        try:
+            return str(locator.first.evaluate("(el) => el.outerHTML || ''") or "")
+        except Exception:
+            return ""
+
+    def _collect_tag_debug_elements(self, page, tag_hint: str = "") -> List[dict]:
+        tag_container = self._find_tag_container(page)
+        root = tag_container or page.locator("body").first
+        try:
+            values = root.evaluate(
+                """(node, payload) => {
+                    const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                    const selectors = payload.selectors || [];
+                    const hint = normalize(payload.hint || '');
+                    const inputEl =
+                        selectors.map((selector) => node.querySelector(selector)).find(Boolean) ||
+                        node.querySelector('[role="combobox"] input, [role="combobox"] textarea, [role="combobox"] [contenteditable="true"], [role="combobox"]') ||
+                        null;
+                    const inputRect = inputEl ? inputEl.getBoundingClientRect() : null;
+                    const items = [];
+                    const elements = Array.from(node.querySelectorAll('button, a, [role="button"], [role="link"], [role="option"], span, div, li'));
+
+                    for (const el of elements) {
+                        if (!el || !el.isConnected) continue;
+                        const rect = el.getBoundingClientRect();
+                        if (!rect.width || !rect.height) continue;
+                        if (inputRect) {
+                            if (rect.top > inputRect.bottom + 240) continue;
+                            if (rect.bottom < inputRect.top - 80) continue;
+                        }
+                        const text = normalize(el.textContent || '');
+                        const ariaLabel = normalize(el.getAttribute('aria-label') || '');
+                        const title = normalize(el.getAttribute('title') || '');
+                        const combined = `${text} ${ariaLabel} ${title}`.trim();
+                        if (!combined) continue;
+                        if (hint && !combined.includes(hint) && !combined.includes(`#${hint}`)) continue;
+                        items.push({
+                            text,
+                            ariaLabel,
+                            title,
+                            tag: el.tagName,
+                            role: el.getAttribute('role') || '',
+                            id: el.id || '',
+                            className: typeof el.className === 'string' ? el.className : '',
+                            rect: {
+                                x: Math.round(rect.x),
+                                y: Math.round(rect.y),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height),
+                            },
+                        });
+                        if (items.length >= 80) break;
+                    }
+
+                    return items;
+                }""",
+                {"selectors": self.TAG_INPUT_SELECTORS, "hint": tag_hint},
+            )
+        except Exception:
+            return []
+        return [item for item in (values or []) if isinstance(item, dict)]
+
+    def capture_debug_snapshot(self, tag_hint: str = "") -> dict:
+        page = self._ensure_page()
+        page.wait_for_timeout(200)
+
+        out_dir = self._debug_dir()
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        suffix = uuid.uuid4().hex[:6]
+        prefix = f"pixiv_debug_{stamp}_{suffix}"
+        json_path = out_dir / f"{prefix}.json"
+        html_path = out_dir / f"{prefix}.html"
+        screenshot_path = out_dir / f"{prefix}.png"
+
+        tag_container = self._find_tag_container(page)
+        suggestion_container = self._find_tag_suggestion_container(page)
+        snapshot = {
+            "tagHint": str(tag_hint or ""),
+            "url": page.url,
+            "title": page.title(),
+            "activeElement": self._describe_active_element(page),
+            "tagCount": self._read_tag_count(page),
+            "tagInputValue": self._read_tag_input_value(page),
+            "selectedTagChips": self._read_selected_tag_chips(page),
+            "selectedTagInlineTokens": self._read_selected_tag_inline_tokens(page),
+            "selectedTagTexts": self._read_selected_tag_texts(page),
+            "tagContainerHtml": self._locator_outer_html(tag_container),
+            "suggestionContainerHtml": self._locator_outer_html(suggestion_container),
+            "nearbyTagElements": self._collect_tag_debug_elements(page, tag_hint=tag_hint),
+        }
+
+        html_path.write_text(page.content(), encoding="utf-8")
+        json_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            page.screenshot(path=str(screenshot_path), full_page=True)
+        except Exception:
+            screenshot_path.write_bytes(b"")
+
+        self._log(f"[Pixiv Debug] Snapshot saved: {json_path}")
+        return {
+            "jsonPath": str(json_path),
+            "htmlPath": str(html_path),
+            "screenshotPath": str(screenshot_path),
+            "tagCount": snapshot["tagCount"],
+            "tagInputValue": snapshot["tagInputValue"],
+            "selectedTagChips": snapshot["selectedTagChips"],
+            "selectedTagInlineTokens": snapshot["selectedTagInlineTokens"],
+            "url": snapshot["url"],
+        }
 
     def _count(self, locator) -> int:
         try:
@@ -211,6 +355,45 @@ class _BrowserPixivUploader(_BasePixivUploader):
         return None
 
     def _find_tag_container(self, page):
+        tag_input = self._first_fillable_locator(
+            page,
+            selectors=self.TAG_INPUT_SELECTORS,
+            labels=self.TAG_INPUT_LABELS,
+            texts=(),
+        )
+        if tag_input is not None:
+            try:
+                ancestors = tag_input.locator("xpath=ancestor::*[self::section or self::fieldset or self::div]")
+                ancestor_count = min(self._count(ancestors), 12)
+                suggestion_candidate = None
+                hash_candidate = None
+                for index in range(ancestor_count):
+                    candidate = ancestors.nth(index)
+                    try:
+                        text = str(candidate.evaluate("(el) => (el.textContent || '').replace(/\\s+/g, ' ').trim()") or "")
+                    except Exception:
+                        continue
+                    if not text:
+                        continue
+                    if re.search(r"\b\d+\s*/\s*10\b", text):
+                        return candidate
+                    if suggestion_candidate is None and re.search(
+                        r"(推荐标签|おすすめタグ|suggested tags|recommended tags)",
+                        text,
+                        re.IGNORECASE,
+                    ):
+                        suggestion_candidate = candidate
+                    if hash_candidate is None and "#" in text:
+                        hash_candidate = candidate
+                if suggestion_candidate is not None:
+                    return suggestion_candidate
+                if hash_candidate is not None:
+                    return hash_candidate
+                if ancestor_count > 0:
+                    return ancestors.nth(0)
+            except Exception:
+                pass
+
         for label in ("标签", "タグ", "Tags", "Tag"):
             title_locator = page.get_by_text(label, exact=False)
             if self._count(title_locator) <= 0:
@@ -263,18 +446,503 @@ class _BrowserPixivUploader(_BasePixivUploader):
         except Exception:
             return None
 
-    def _wait_for_tag_count_increment(self, page, current_count: Optional[int], timeout_ms: int = 1200) -> Optional[int]:
-        if current_count is None:
-            page.wait_for_timeout(min(timeout_ms, 400))
-            return self._read_tag_count(page)
+    def _normalize_tag_text(self, value: str) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        while text.startswith("#"):
+            text = text[1:].strip()
+        return text.lower()
 
+    def _find_tag_input(self, page):
+        tag_container = self._find_tag_container(page)
+        return self._first_fillable_locator(
+            tag_container or page,
+            selectors=self.TAG_INPUT_SELECTORS,
+            labels=self.TAG_INPUT_LABELS,
+            texts=(),
+        )
+
+    def _read_fillable_locator_value(self, locator) -> str:
+        if locator is None:
+            return ""
+        try:
+            return str(
+                locator.evaluate(
+                    """(el) => {
+                        const tag = (el.tagName || '').toLowerCase();
+                        const role = (el.getAttribute('role') || '').toLowerCase();
+                        const editable = (el.getAttribute('contenteditable') || '').toLowerCase() === 'true';
+                        let value = '';
+                        if (tag === 'input' || tag === 'textarea') {
+                            value = el.value || '';
+                        } else if (editable || role === 'textbox' || role === 'searchbox') {
+                            value = el.textContent || '';
+                        } else {
+                            value = (el.value || el.textContent || '') + '';
+                        }
+                        return value.replace(/\\s+/g, ' ').trim();
+                    }"""
+                )
+                or ""
+            ).strip()
+        except Exception:
+            return ""
+
+    def _read_tag_input_value(self, page) -> str:
+        locator = self._find_tag_input(page)
+        return self._read_fillable_locator_value(locator)
+
+    def _clear_fillable_locator_text(self, locator) -> bool:
+        if locator is None:
+            return False
+        current_value = self._read_fillable_locator_value(locator)
+        if not current_value:
+            return False
+        try:
+            cleared = locator.evaluate(
+                """(el) => {
+                    const tag = (el.tagName || '').toLowerCase();
+                    const role = (el.getAttribute('role') || '').toLowerCase();
+                    const editable = (el.getAttribute('contenteditable') || '').toLowerCase() === 'true';
+                    if (tag === 'input' || tag === 'textarea') {
+                        el.value = '';
+                    } else if (editable || role === 'textbox' || role === 'searchbox') {
+                        el.textContent = '';
+                    } else {
+                        return false;
+                    }
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }"""
+            )
+            if cleared:
+                return True
+        except Exception:
+            pass
+        try:
+            locator.fill("")
+            return True
+        except Exception:
+            return False
+
+    def _log_tag_state(self, page, context: str, tag: str) -> None:
+        count = self._read_tag_count(page)
+        selected = self._read_selected_tag_chips(page)
+        inline_selected = self._read_selected_tag_inline_tokens(page)
+        input_value = self._read_tag_input_value(page)
+        self._log(
+            f"[Pixiv] Tag state after {context}: tag={tag}, count={count}, input={input_value or '<empty>'}, selected={selected}, inline={inline_selected}"
+        )
+
+    def _read_selected_tag_texts(self, page) -> List[str]:
+        tag_container = self._find_tag_container(page)
+        if tag_container is None:
+            return []
+        tag_input = self._first_fillable_locator(
+            tag_container,
+            selectors=[
+                "[role='combobox'] input:not([type='checkbox'])",
+                "[role='combobox'] textarea",
+                "[role='combobox'] [contenteditable='true']",
+                "input[name*='tag' i]:not([type='checkbox'])",
+                "input[id*='tag' i]:not([type='checkbox'])",
+                "input[placeholder*='tag' i]",
+                "input[placeholder*='Tag' i]",
+                "input[placeholder*='タグ']",
+                "input[placeholder*='标签']",
+                "input[aria-label*='tag' i]",
+                "input[aria-label*='タグ']",
+                "input[aria-label*='标签']",
+                "[role='combobox']",
+            ],
+            labels=["Tags", "Tag", "タグ", "标签"],
+            texts=(),
+        )
+        if tag_input is None:
+            return []
+        try:
+            values = tag_input.evaluate(
+                """(inputEl) => {
+                    const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                    const inputRect = inputEl.getBoundingClientRect();
+                    const roots = [];
+                    let node = inputEl.closest('[role="combobox"]') || inputEl.parentElement;
+                    for (let depth = 0; node && depth < 4; depth += 1) {
+                        roots.push(node);
+                        node = node.parentElement;
+                    }
+                    const result = [];
+                    const seen = new Set();
+
+                    for (const root of roots) {
+                        if (!root) continue;
+                        const elements = Array.from(
+                            root.querySelectorAll('button, [role="button"], span, div, a, li')
+                        );
+                        for (const el of elements) {
+                            if (!el || !el.isConnected || el === inputEl) continue;
+                            if (el.contains(inputEl)) continue;
+                            if (el.closest('input, textarea, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="listbox"], [role="option"]')) {
+                                continue;
+                            }
+                            const rect = el.getBoundingClientRect();
+                            if (!rect.width || !rect.height) continue;
+                            if (rect.top > inputRect.bottom + 12) continue;
+                            if (rect.bottom < inputRect.top - 180) continue;
+
+                            const candidates = [
+                                normalize(el.textContent || ''),
+                                normalize(el.getAttribute('aria-label') || ''),
+                                normalize(el.getAttribute('title') || ''),
+                            ];
+                            for (const candidate of candidates) {
+                                if (!candidate || !candidate.startsWith('#')) continue;
+                                if (candidate.length <= 1) continue;
+                                if (seen.has(candidate)) continue;
+                                seen.add(candidate);
+                                result.push(candidate);
+                            }
+                        }
+                    }
+
+                    return result.slice(0, 40);
+                }"""
+            )
+        except Exception:
+            return []
+        return [str(value).strip() for value in (values or []) if str(value).strip()]
+
+    def _read_selected_tag_chips(self, page) -> List[str]:
+        tag_container = self._find_tag_container(page)
+        if tag_container is None:
+            return []
+        try:
+            values = tag_container.evaluate(
+                """(container, payload) => {
+                    const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                    const selectors = payload.selectors || [];
+                    const labels = (payload.labels || []).map((value) => normalize(value).toLowerCase()).filter(Boolean);
+                    const stripDecorations = (text) =>
+                        normalize(text)
+                            .replace(/^#+/, '')
+                            .replace(/[×✕✖✗✘✚＋+]+$/g, '')
+                            .replace(/^[#＃]\s*/, '')
+                            .trim();
+                    const extractTokens = (text) => {
+                        const normalized = normalize(text);
+                        if (!normalized) return [];
+                        const result = [];
+                        const hashMatches = normalized.match(/#[^\\s#]+/g) || [];
+                        for (const token of hashMatches) {
+                            const cleaned = stripDecorations(token);
+                            if (cleaned) result.push(cleaned);
+                        }
+                        const plain = stripDecorations(normalized);
+                        if (
+                            plain &&
+                            !/^\d+\s*\/\s*\d+$/.test(plain) &&
+                            !labels.includes(plain.toLowerCase()) &&
+                            !/^(recommended tags|suggested tags|推荐标签|おすすめタグ)$/i.test(plain)
+                        ) {
+                            result.push(plain);
+                        }
+                        return result;
+                    };
+                    const isEditable = (el) =>
+                        !!el.closest('input, textarea, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="listbox"], [role="option"]');
+                    const inputEl =
+                        selectors.map((selector) => container.querySelector(selector)).find(Boolean) ||
+                        container.querySelector('[role="combobox"] input, [role="combobox"] textarea, [role="combobox"] [contenteditable="true"], [role="combobox"]') ||
+                        null;
+                    if (!inputEl) return [];
+                    const inputRect = inputEl.getBoundingClientRect();
+                    const result = [];
+                    const seen = new Set();
+                    const elements = Array.from(
+                        container.querySelectorAll('button, [role="button"], a, [role="link"], span, div, li')
+                    );
+
+                    for (const el of elements) {
+                        if (!el || !el.isConnected || el === inputEl) continue;
+                        if (el.contains(inputEl)) continue;
+                        if (isEditable(el)) continue;
+                        const rect = el.getBoundingClientRect();
+                        if (!rect.width || !rect.height) continue;
+                        if (rect.top > inputRect.bottom + 8) continue;
+                        if (rect.bottom < inputRect.top - 36) continue;
+
+                        const plainText = normalize(el.textContent || '');
+                        const lowerText = plainText.toLowerCase();
+                        if (labels.some((label) => lowerText === label || lowerText.endsWith(' ' + label))) {
+                            continue;
+                        }
+
+                        const candidates = [
+                            plainText,
+                            normalize(el.getAttribute('aria-label') || ''),
+                            normalize(el.getAttribute('title') || ''),
+                        ];
+                        for (const candidate of candidates) {
+                            for (const token of extractTokens(candidate)) {
+                                if (token.length <= 1) continue;
+                                if (seen.has(token)) continue;
+                                seen.add(token);
+                                result.push(token);
+                            }
+                        }
+                    }
+
+                    return result.slice(0, 20);
+                }""",
+                {"selectors": self.TAG_INPUT_SELECTORS, "labels": self.TAG_INPUT_LABELS},
+            )
+        except Exception:
+            return []
+        return [str(value).strip() for value in (values or []) if str(value).strip()]
+
+    def _read_selected_tag_inline_tokens(self, page) -> List[str]:
+        tag_container = self._find_tag_container(page)
+        if tag_container is None:
+            return []
+        try:
+            values = tag_container.evaluate(
+                """(container, payload) => {
+                    const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                    const selectors = payload.selectors || [];
+                    const stripDecorations = (text) =>
+                        normalize(text)
+                            .replace(/^#+/, '')
+                            .replace(/[×✕✖✗✘✚＋+]+$/g, '')
+                            .replace(/^[#＃]\s*/, '')
+                            .trim();
+                    const addHashTokens = (target, text, seen) => {
+                        const normalized = normalize(text);
+                        if (!normalized) return;
+                        const matches = normalized.match(/#[^\s#]+/g) || [];
+                        for (const token of matches) {
+                            const cleaned = stripDecorations(token);
+                            if (!cleaned || cleaned.length <= 1 || seen.has(cleaned)) continue;
+                            seen.add(cleaned);
+                            target.push(cleaned);
+                        }
+                    };
+                    const inputEl =
+                        selectors.map((selector) => container.querySelector(selector)).find(Boolean) ||
+                        container.querySelector('[role="combobox"] input, [role="combobox"] textarea, [role="combobox"] [contenteditable="true"], [role="combobox"]') ||
+                        null;
+                    if (!inputEl) return [];
+
+                    const inputRect = inputEl.getBoundingClientRect();
+                    const roots = [];
+                    const pushRoot = (el) => {
+                        if (!el || !el.isConnected || roots.includes(el)) return;
+                        roots.push(el);
+                    };
+                    pushRoot(inputEl.closest('[role="combobox"]'));
+                    pushRoot(inputEl.parentElement);
+                    pushRoot(inputEl.closest('div'));
+
+                    const result = [];
+                    const seen = new Set();
+                    for (const root of roots) {
+                        if (!root) continue;
+                        const rootRect = root.getBoundingClientRect();
+                        if (!rootRect.width || !rootRect.height) continue;
+                        if (rootRect.top > inputRect.bottom + 48) continue;
+                        if (rootRect.bottom < inputRect.top - 24) continue;
+
+                        addHashTokens(result, root.textContent || '', seen);
+                        addHashTokens(result, root.getAttribute('aria-label') || '', seen);
+                        addHashTokens(result, root.getAttribute('title') || '', seen);
+
+                        const inlineNodes = Array.from(root.querySelectorAll('button, [role="button"], a, [role="link"], span, div, li'));
+                        for (const el of inlineNodes) {
+                            if (!el || !el.isConnected) continue;
+                            const rect = el.getBoundingClientRect();
+                            if (!rect.width || !rect.height) continue;
+                            if (rect.top > inputRect.bottom + 24) continue;
+                            if (rect.bottom < inputRect.top - 24) continue;
+                            addHashTokens(result, el.textContent || '', seen);
+                            addHashTokens(result, el.getAttribute('aria-label') || '', seen);
+                            addHashTokens(result, el.getAttribute('title') || '', seen);
+                        }
+                    }
+
+                    return result.slice(0, 20);
+                }""",
+                {"selectors": self.TAG_INPUT_SELECTORS},
+            )
+        except Exception:
+            return []
+        return [str(value).strip() for value in (values or []) if str(value).strip()]
+
+    def _has_selected_tag(self, page, tag: str) -> bool:
+        normalized_tag = self._normalize_tag_text(tag)
+        if not normalized_tag:
+            return False
+
+        candidates = self._read_selected_tag_chips(page)
+        inline_candidates = self._read_selected_tag_inline_tokens(page)
+        for value in [*candidates, *inline_candidates]:
+            normalized_value = self._normalize_tag_text(value)
+            if not normalized_value:
+                continue
+            if normalized_value == normalized_tag:
+                return True
+            if normalized_value.startswith(normalized_tag):
+                next_char = normalized_value[len(normalized_tag):len(normalized_tag) + 1]
+                if not next_char or next_char in {" ", "\n", "\t", "/", "(", "（", "[", "【", "-", "－", "—", "・", ":", "：", ",", "，", ".", "。", "×", "✕", "✖"}:
+                    return True
+            if normalized_tag.startswith(normalized_value):
+                return True
+        return False
+
+    def _wait_for_tag_commit(
+        self,
+        page,
+        tag: str,
+        current_count: Optional[int],
+        tag_present_before: bool,
+        timeout_ms: int = 2200,
+    ) -> tuple[bool, Optional[int]]:
         deadline = time.time() + (timeout_ms / 1000)
         while time.time() < deadline:
             updated_count = self._read_tag_count(page)
-            if updated_count is not None and updated_count > current_count:
-                return updated_count
+            if current_count is not None and updated_count is not None and updated_count > current_count:
+                return True, updated_count
+            if not tag_present_before and self._has_selected_tag(page, tag):
+                return True, updated_count
             page.wait_for_timeout(120)
-        return self._read_tag_count(page)
+
+        updated_count = self._read_tag_count(page)
+        if current_count is not None and updated_count is not None and updated_count > current_count:
+            return True, updated_count
+        if not tag_present_before and self._has_selected_tag(page, tag):
+            return True, updated_count
+        if current_count is None and updated_count is not None:
+            return True, updated_count
+        return False, updated_count
+
+    def _get_active_autocomplete_root(self, page):
+        try:
+            details = page.evaluate(
+                """() => {
+                    const el = document.activeElement;
+                    if (!el) return null;
+                    const controls = el.getAttribute('aria-controls') || '';
+                    if (!controls) return null;
+                    return { controls };
+                }"""
+            )
+        except Exception:
+            return None
+
+        if not details:
+            return None
+        controls = str(details.get("controls") or "").strip()
+        if not controls:
+            return None
+
+        root = page.locator(f"#{controls}")
+        if self._count(root) <= 0:
+            return None
+        return root.first
+
+    def _find_visible_tag_autocomplete(self, page):
+        roots = []
+        active_root = self._get_active_autocomplete_root(page)
+        if active_root is not None:
+            roots.append(active_root)
+        roots.append(page)
+
+        for root in roots:
+            for selector in self.TAG_AUTOCOMPLETE_SELECTORS:
+                locator = root.locator(selector)
+                count = min(self._count(locator), 12)
+                for index in range(count):
+                    item = locator.nth(index)
+                    try:
+                        if item.is_visible():
+                            return item
+                    except Exception:
+                        continue
+        return None
+
+    def _wait_for_tag_autocomplete(self, page, timeout_ms: int = 800) -> bool:
+        deadline = time.time() + (timeout_ms / 1000)
+        while time.time() < deadline:
+            if self._find_visible_tag_autocomplete(page) is not None:
+                return True
+            page.wait_for_timeout(80)
+        return self._find_visible_tag_autocomplete(page) is not None
+
+    def _normalize_visible_text(self, value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    def _matches_tag_candidate_text(self, text: str, candidates: Iterable[str], *, require_hash: bool = False) -> bool:
+        normalized = self._normalize_visible_text(text)
+        if not normalized:
+            return False
+        if require_hash and not normalized.startswith("#"):
+            return False
+
+        for candidate in candidates:
+            wanted = self._normalize_visible_text(candidate)
+            if not wanted:
+                continue
+            if normalized == wanted:
+                return True
+            if normalized.startswith(wanted):
+                next_char = normalized[len(wanted):len(wanted) + 1]
+                if not next_char or next_char in {" ", "\t", "\n", "/", "(", "（", "[", "【", "-", "－", "—", "・", ":", "：", ",", "，", ".", "。"}:
+                    return True
+        return False
+
+    def _click_matching_text_candidate(self, root, candidates: List[str], *, require_hash: bool = False) -> Optional[str]:
+        locator = root.locator("a, button, [role='option'], [role='button'], [role='link'], li, span, div")
+        count = min(self._count(locator), 80)
+        for index in range(count):
+            item = locator.nth(index)
+            try:
+                if not item.is_visible():
+                    continue
+                text = str(item.evaluate("(el) => (el.textContent || '').replace(/\\s+/g, ' ').trim()") or "")
+            except Exception:
+                continue
+            if not self._matches_tag_candidate_text(text, candidates, require_hash=require_hash):
+                continue
+            if self._click_locator_or_interactive_ancestor(item):
+                return text
+        return None
+
+    def _click_matching_tag_autocomplete(self, page, tag: str) -> bool:
+        candidates = [f"#{tag}", tag]
+        roots = []
+        active_root = self._get_active_autocomplete_root(page)
+        if active_root is not None:
+            roots.append(("active", active_root))
+        roots.append(("page", page))
+
+        for root_name, root in roots:
+            for selector in self.TAG_AUTOCOMPLETE_SELECTORS:
+                locator = root.locator(selector)
+                count = min(self._count(locator), 12)
+                for index in range(count):
+                    item = locator.nth(index)
+                    try:
+                        if not item.is_visible():
+                            continue
+                        text = str(item.evaluate("(el) => (el.textContent || '').replace(/\\s+/g, ' ').trim()") or "")
+                    except Exception:
+                        continue
+                    if not text:
+                        continue
+                    if not any(text == candidate or text.startswith(candidate + " ") or text.startswith(candidate + "\n") for candidate in candidates):
+                        continue
+                    if self._click_locator_or_interactive_ancestor(item):
+                        self._log(f"[Pixiv] Clicked autocomplete option from {root_name}: {text}")
+                        return True
+        return False
 
     def _click_locator_or_interactive_ancestor(self, locator) -> bool:
         if locator is None or self._count(locator) <= 0:
@@ -298,18 +966,28 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 continue
         return False
 
-    def _click_exact_tag_text_via_dom(self, root, candidates: List[str], *, require_hash: bool = False) -> bool:
+    def _click_exact_tag_text_via_dom(self, root, candidates: List[str], *, require_hash: bool = False) -> Optional[str]:
         try:
-            clicked = bool(
-                root.evaluate(
-                    """(node, payload) => {
+            clicked = root.evaluate(
+                """(node, payload) => {
                         const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
                         const wanted = (payload.values || []).map(normalize).filter(Boolean);
                         const requireHash = !!payload.requireHash;
-                        if (!wanted.length) return false;
+                        if (!wanted.length) return null;
 
                         const isEditable = (element) =>
                             !!element.closest('input, textarea, [contenteditable="true"], [role="textbox"], [role="searchbox"]');
+
+                        const matchesWanted = (text) => {
+                            if (!text) return false;
+                            if (requireHash && !text.startsWith('#')) return false;
+                            return wanted.some((value) => {
+                                if (text === value) return true;
+                                if (!text.startsWith(value)) return false;
+                                const nextChar = text.slice(value.length, value.length + 1);
+                                return !nextChar || /[\\s\\/\\(（\\[【\\-－—・:：,，.。]/.test(nextChar);
+                            });
+                        };
 
                         const interactiveSelector = 'a, button, [role="option"], [role="button"], [role="link"], li, span, div';
                         const elements = Array.from(node.querySelectorAll(interactiveSelector));
@@ -322,9 +1000,9 @@ class _BrowserPixivUploader(_BasePixivUploader):
                                 target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
                                 target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
                                 target.click();
-                                return true;
+                                return normalize(target.textContent || element.textContent || '');
                             } catch (err) {
-                                return false;
+                                return null;
                             }
                         };
 
@@ -332,21 +1010,19 @@ class _BrowserPixivUploader(_BasePixivUploader):
                             if (isEditable(element)) continue;
                             const text = normalize(element.textContent);
                             if (!text) continue;
-                            if (requireHash && !text.startsWith('#')) continue;
-                            for (const value of wanted) {
-                                if (text === value) {
-                                    if (tryClick(element)) return true;
-                                }
+                            if (!matchesWanted(text)) continue;
+                            const clickedText = tryClick(element);
+                            if (clickedText) {
+                                return clickedText;
                             }
                         }
-                        return false;
+                        return null;
                     }""",
                     {"values": candidates, "requireHash": require_hash},
                 )
-            )
-            return clicked
+            return str(clicked).strip() if clicked else None
         except Exception:
-            return False
+            return None
 
     def _describe_active_element(self, page) -> str:
         try:
@@ -359,6 +1035,9 @@ class _BrowserPixivUploader(_BasePixivUploader):
                         tag: (el.tagName || '').toLowerCase(),
                         type: el.getAttribute('type') || '',
                         role: el.getAttribute('role') || '',
+                        placeholder: el.getAttribute('placeholder') || '',
+                        ariaControls: el.getAttribute('aria-controls') || '',
+                        ariaExpanded: el.getAttribute('aria-expanded') || '',
                         id: el.id || '',
                         name: el.getAttribute('name') || '',
                         className: typeof el.className === 'string' ? el.className : '',
@@ -379,21 +1058,70 @@ class _BrowserPixivUploader(_BasePixivUploader):
         )
         return summary or "unknown"
 
-    def _confirm_after_suggestion_click(self, page, tag: str, current_count: Optional[int], source: str) -> Optional[int]:
-        updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=800)
-        if current_count is not None and updated_count is not None and updated_count > current_count:
-            return updated_count
-        if current_count is None:
-            return updated_count
+    def _confirm_after_suggestion_click(
+        self,
+        page,
+        tag: str,
+        current_count: Optional[int],
+        source: str,
+        tag_present_before: bool,
+    ) -> tuple[bool, Optional[int]]:
+        committed, updated_count = self._wait_for_tag_commit(
+            page,
+            tag,
+            current_count,
+            tag_present_before,
+            timeout_ms=800,
+        )
+        if committed:
+            return True, updated_count
 
         self._log(f"[Pixiv] Suggestion click from {source} needs explicit Enter: {tag}")
         page.keyboard.press("Enter")
-        updated_count = self._wait_for_tag_count_increment(page, current_count, timeout_ms=1200)
-        if current_count is not None and updated_count is not None and updated_count > current_count:
-            return updated_count
-        if current_count is None:
-            return updated_count
-        return None
+        committed, updated_count = self._wait_for_tag_commit(
+            page,
+            tag,
+            current_count,
+            tag_present_before,
+            timeout_ms=1200,
+        )
+        if committed:
+            return True, updated_count
+
+        locator = self._find_tag_input(page)
+        if locator is not None:
+            try:
+                locator.click()
+                locator.evaluate("(el) => el.focus()")
+            except Exception:
+                pass
+
+            self._log(f"[Pixiv] Suggestion click from {source} needs refocus Enter: {tag}")
+            page.keyboard.press("Enter")
+            committed, updated_count = self._wait_for_tag_commit(
+                page,
+                tag,
+                current_count,
+                tag_present_before,
+                timeout_ms=1200,
+            )
+            if committed:
+                return True, updated_count
+
+            self._log(f"[Pixiv] Suggestion click from {source} needs refocus Tab: {tag}")
+            page.keyboard.press("Tab")
+            committed, updated_count = self._wait_for_tag_commit(
+                page,
+                tag,
+                current_count,
+                tag_present_before,
+                timeout_ms=1200,
+            )
+            if committed:
+                return True, updated_count
+
+        self._log_tag_state(page, f"{source} confirm fallback failure", tag)
+        return False, updated_count
 
     def _click_matching_tag_suggestion(self, page, tag: str, current_count: Optional[int]) -> Optional[int]:
         suggestion_container = self._find_tag_suggestion_container(page)
@@ -402,40 +1130,82 @@ class _BrowserPixivUploader(_BasePixivUploader):
         if suggestion_container is not None:
             roots.append(("suggestion", suggestion_container))
         if not roots:
+            self._log(f"[Pixiv] No suggestion container found for: {tag}")
             return None
 
         for root_name, root in roots:
-            direct_candidates = [hashed_candidate, tag]
-            for candidate in direct_candidates:
-                for getter in (
-                    lambda value: root.get_by_role("option", name=value, exact=True),
-                    lambda value: root.get_by_role("link", name=value, exact=True),
-                    lambda value: root.get_by_role("button", name=value, exact=True),
-                    lambda value: root.get_by_text(value, exact=True),
-                ):
-                    locator = getter(candidate)
-                    if self._count(locator) <= 0:
-                        continue
-                    if not self._click_locator_or_interactive_ancestor(locator):
-                        continue
-                    self._log(f"[Pixiv] Clicked visible suggestion candidate from {root_name}: {candidate}")
-                    updated_count = self._confirm_after_suggestion_click(page, tag, current_count, f"{root_name}/visible")
-                    if updated_count is not None:
-                        return updated_count
-                    self._log(f"[Pixiv] Visible suggestion click from {root_name} did not confirm: {tag}")
-
-            dom_candidates = [hashed_candidate, tag]
-            clicked = self._click_exact_tag_text_via_dom(
+            clicked_text = self._click_matching_text_candidate(
                 root,
-                dom_candidates,
+                [hashed_candidate],
+                require_hash=True,
+            )
+            if clicked_text:
+                self._log(f"[Pixiv] Clicked visible suggestion candidate from {root_name}: {clicked_text}")
+                committed, updated_count = self._confirm_after_suggestion_click(
+                    page,
+                    tag,
+                    current_count,
+                    f"{root_name}/visible-hash",
+                    tag_present_before=False,
+                )
+                if committed:
+                    return updated_count
+                self._log(f"[Pixiv] Visible suggestion click from {root_name} did not confirm: {tag}")
+
+            clicked_text = self._click_matching_text_candidate(
+                root,
+                [hashed_candidate, tag],
                 require_hash=False,
             )
-            if clicked:
-                self._log(f"[Pixiv] Clicked DOM suggestion fallback from {root_name}: {tag}")
-                updated_count = self._confirm_after_suggestion_click(page, tag, current_count, f"{root_name}/dom")
-                if updated_count is not None:
+            if clicked_text:
+                self._log(f"[Pixiv] Clicked loose visible suggestion candidate from {root_name}: {clicked_text}")
+                committed, updated_count = self._confirm_after_suggestion_click(
+                    page,
+                    tag,
+                    current_count,
+                    f"{root_name}/visible-loose",
+                    tag_present_before=False,
+                )
+                if committed:
+                    return updated_count
+                self._log(f"[Pixiv] Loose visible suggestion click from {root_name} did not confirm: {tag}")
+
+            clicked_text = self._click_exact_tag_text_via_dom(
+                root,
+                [hashed_candidate],
+                require_hash=True,
+            )
+            if clicked_text:
+                self._log(f"[Pixiv] Clicked DOM suggestion fallback from {root_name}: {clicked_text}")
+                committed, updated_count = self._confirm_after_suggestion_click(
+                    page,
+                    tag,
+                    current_count,
+                    f"{root_name}/dom-hash",
+                    tag_present_before=False,
+                )
+                if committed:
                     return updated_count
                 self._log(f"[Pixiv] DOM suggestion fallback from {root_name} did not confirm: {tag}")
+
+            clicked_text = self._click_exact_tag_text_via_dom(
+                root,
+                [hashed_candidate, tag],
+                require_hash=False,
+            )
+            if clicked_text:
+                self._log(f"[Pixiv] Clicked loose DOM suggestion fallback from {root_name}: {clicked_text}")
+                committed, updated_count = self._confirm_after_suggestion_click(
+                    page,
+                    tag,
+                    current_count,
+                    f"{root_name}/dom-loose",
+                    tag_present_before=False,
+                )
+                if committed:
+                    return updated_count
+                self._log(f"[Pixiv] Loose DOM suggestion fallback from {root_name} did not confirm: {tag}")
+        self._log(f"[Pixiv] Suggestion container did not yield a confirmed match for: {tag}")
         return None
 
     def _is_login_required(self, page) -> bool:
@@ -591,6 +1361,14 @@ class _BrowserPixivUploader(_BasePixivUploader):
         self._log(f"[Pixiv] Preparing to add {len(tags)} tag(s).")
 
         for tag in tags:
+            tag_present_before = self._has_selected_tag(page, tag)
+            if tag_present_before:
+                refreshed_count = self._read_tag_count(page)
+                if refreshed_count is not None:
+                    current_count = refreshed_count
+                self._log(f"[Pixiv] Tag already present, skipping duplicate add: {tag}")
+                continue
+
             locator = self._first_fillable_locator(
                 search_root,
                 selectors=selectors,
@@ -601,52 +1379,104 @@ class _BrowserPixivUploader(_BasePixivUploader):
                 raise RuntimeError(f"未找到 Pixiv 标签输入框，无法填写标签：{tag}")
 
             committed = False
-            for strategy in ("Enter", "RefocusEnter"):
+            autocomplete_ready = False
+            for strategy in ("Enter", "ArrowDownEnter", "RefocusEnter"):
+                locator = self._first_fillable_locator(
+                    search_root,
+                    selectors=selectors,
+                    labels=labels,
+                    texts=(),
+                )
+                if locator is None:
+                    break
+
                 locator.click()
                 try:
                     locator.evaluate("(el) => el.focus()")
                 except Exception:
                     pass
-                try:
-                    locator.press("Control+A")
-                    locator.press("Delete")
-                except Exception:
+                cleared_input = self._clear_fillable_locator_text(locator)
+                if cleared_input:
+                    self._log(f"[Pixiv] Cleared pending text before {strategy}: {tag}")
+
+                locator.type(tag, delay=22)
+
+                autocomplete_ready = self._wait_for_tag_autocomplete(page, timeout_ms=1200)
+                if autocomplete_ready:
+                    self._log(f"[Pixiv] Autocomplete ready for: {tag}")
+                else:
+                    page.wait_for_timeout(360)
+
+                if strategy == "ArrowDownEnter":
                     try:
-                        locator.fill("")
+                        locator.press("ArrowDown")
+                        page.wait_for_timeout(120)
                     except Exception:
                         pass
-
-                locator.type(tag, delay=10)
-                page.wait_for_timeout(150)
-                if strategy == "RefocusEnter":
+                elif strategy == "RefocusEnter":
                     try:
                         locator.click()
                         locator.evaluate("(el) => el.focus()")
                     except Exception:
                         pass
+
+                self._log(f"[Pixiv] Active element before {strategy}: {self._describe_active_element(page)}")
                 page.keyboard.press("Enter")
-                updated_count = self._wait_for_tag_count_increment(page, current_count)
-                if current_count is not None and updated_count is not None and updated_count > current_count:
-                    current_count = updated_count
+                committed_now, updated_count = self._wait_for_tag_commit(
+                    page,
+                    tag,
+                    current_count,
+                    tag_present_before,
+                )
+                if committed_now:
+                    refreshed_count = self._read_tag_count(page)
+                    if refreshed_count is not None:
+                        current_count = refreshed_count
+                    elif updated_count is not None:
+                        current_count = updated_count
                     committed = True
                     suffix = " after refocus" if strategy == "RefocusEnter" else ""
-                    self._log(f"[Pixiv] Added tag{suffix}: {tag} ({updated_count}/10)")
-                    break
-                if current_count is None:
-                    committed = True
-                    suffix = " after refocus" if strategy == "RefocusEnter" else ""
-                    self._log(f"[Pixiv] Submitted tag{suffix} without count feedback: {tag}")
+                    if current_count is not None:
+                        self._log(f"[Pixiv] Added tag{suffix}: {tag} ({current_count}/10)")
+                    else:
+                        self._log(f"[Pixiv] Added tag{suffix} without count feedback: {tag}")
                     break
                 self._log(f"[Pixiv] Tag strategy {strategy} did not confirm: {tag}")
+                self._log_tag_state(page, strategy, tag)
+
+            if not committed and autocomplete_ready:
+                if self._click_matching_tag_autocomplete(page, tag):
+                    committed_now, updated_count = self._confirm_after_suggestion_click(
+                        page,
+                        tag,
+                        current_count,
+                        "autocomplete",
+                        tag_present_before,
+                    )
+                    if committed_now:
+                        refreshed_count = self._read_tag_count(page)
+                        if refreshed_count is not None:
+                            current_count = refreshed_count
+                        elif updated_count is not None:
+                            current_count = updated_count
+                        committed = True
+                        if current_count is not None:
+                            self._log(f"[Pixiv] Added tag via autocomplete click: {tag} ({current_count}/10)")
+                        else:
+                            self._log(f"[Pixiv] Added tag via autocomplete click without count feedback: {tag}")
+                    else:
+                        self._log(f"[Pixiv] Autocomplete click did not confirm: {tag}")
+                else:
+                    self._log(f"[Pixiv] Autocomplete visible but no matching option clicked: {tag}")
 
             if not committed:
-                self._log(f"[Pixiv] Active element before suggestion fallback: {self._describe_active_element(page)}")
                 updated_count = self._click_matching_tag_suggestion(page, tag, current_count)
                 if current_count is not None and updated_count is not None and updated_count > current_count:
                     current_count = updated_count
                     committed = True
-                    self._log(f"[Pixiv] Added tag via suggestion: {tag} ({updated_count}/10)")
+                    self._log(f"[Pixiv] Added tag via suggestion: {tag} ({current_count}/10)")
                 elif current_count is None and updated_count is not None:
+                    current_count = updated_count
                     committed = True
                     self._log(f"[Pixiv] Added tag via suggestion without count feedback: {tag}")
 
@@ -983,6 +1813,9 @@ class PixivUploader:
 
     def close(self) -> None:
         self._uploader.close()
+
+    def capture_debug_snapshot(self, tag_hint: str = "") -> dict:
+        return self._uploader.capture_debug_snapshot(tag_hint=tag_hint)
 
     def upload_image(
         self,

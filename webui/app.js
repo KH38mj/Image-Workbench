@@ -21,6 +21,7 @@ const state = {
     fontHighlightTimer: null,
     pixivLlmModels: [],
     lastSavedSettingsSnapshot: '',
+    logs: [],
   },
 };
 
@@ -185,6 +186,7 @@ function cacheRefs() {
     'testPixivLlmBtn',
     'previewPixivBtn',
     'testPixivUploadBtn',
+    'capturePixivDebugBtn',
     'pixivLlmModelPreset',
     'pixivLlmModelCustom',
     'pixivLlmTemperature',
@@ -227,6 +229,8 @@ function cacheRefs() {
     'sourceEmpty',
     'resultEmpty',
     'logList',
+    'copyLogBtn',
+    'exportLogBtn',
     'clearLogBtn',
   ];
 
@@ -258,6 +262,7 @@ function bindEvents() {
   refs.testPixivLlmBtn.addEventListener('click', onTestPixivLlm);
   refs.previewPixivBtn.addEventListener('click', onPreviewPixivSubmission);
   refs.testPixivUploadBtn.addEventListener('click', onTestPixivUploadCurrent);
+  refs.capturePixivDebugBtn.addEventListener('click', onCapturePixivDebug);
   refs.startBatchBtn.addEventListener('click', onStartBatch);
   refs.stopBatchBtn.addEventListener('click', onStopBatch);
   refs.renderPreviewBtn.addEventListener('click', onRenderPreview);
@@ -265,8 +270,12 @@ function bindEvents() {
   refs.resetPreviewBtn.addEventListener('click', onResetPreview);
   refs.undoRegionBtn.addEventListener('click', undoLastRegion);
   refs.clearRegionsBtn.addEventListener('click', clearRegions);
+  refs.copyLogBtn.addEventListener('click', onCopyLogs);
+  refs.exportLogBtn.addEventListener('click', onExportLogs);
   refs.clearLogBtn.addEventListener('click', () => {
+    state.ui.logs = [];
     refs.logList.innerHTML = '';
+    updateStatusBadge('状态: 日志已清空');
   });
   document.querySelectorAll('.sidebar-tab').forEach((button) => {
     button.addEventListener('click', () => {
@@ -1069,6 +1078,35 @@ async function onTestPixivUploadCurrent() {
   syncPixivFieldState();
 }
 
+function getFirstPixivTagHint() {
+  return String(refs.pixivTags?.value || '')
+    .split(/[\r\n,]+/)
+    .map((item) => item.trim())
+    .find(Boolean) || '';
+}
+
+async function onCapturePixivDebug() {
+  refs.capturePixivDebugBtn.disabled = true;
+  updateStatusBadge('Status: Capturing Pixiv debug snapshot');
+  try {
+    const result = await window.pywebview.api.capture_interactive_pixiv_debug(getFirstPixivTagHint());
+    if (!result.ok) {
+      (result.logs || []).forEach((message) => pushLog(message));
+      pushLog(result.error || 'Pixiv debug snapshot failed');
+      updateStatusBadge('Status: Pixiv debug snapshot failed');
+      return;
+    }
+
+    (result.logs || []).forEach((message) => pushLog(message));
+    updateStatusBadge(`Status: ${result.message || 'Pixiv debug snapshot captured'}`);
+  } catch (error) {
+    pushLog(`Pixiv debug snapshot failed: ${error && error.message ? error.message : error}`);
+    updateStatusBadge('Status: Pixiv debug snapshot failed');
+  } finally {
+    syncPixivFieldState();
+  }
+}
+
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
   updateStatusBadge('Status: Testing Pixiv LLM');
@@ -1313,6 +1351,7 @@ function syncPixivFieldState() {
   refs.testPixivLlmBtn.disabled = !enabled || !llmEnabled;
   refs.previewPixivBtn.disabled = !enabled;
   refs.testPixivUploadBtn.disabled = !enabled;
+  refs.capturePixivDebugBtn.disabled = !enabled || directMode;
   updatePixivModeHint();
 }
 
@@ -1803,10 +1842,63 @@ function hideStartupOverlay() {
   refs.startupOverlay.classList.add('hidden');
 }
 
+function getLogText() {
+  return state.ui.logs.join('\n\n');
+}
+
+async function onCopyLogs() {
+  const text = getLogText();
+  if (!text) {
+    pushLog('暂无可复制的日志');
+    return;
+  }
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const helper = document.createElement('textarea');
+      helper.value = text;
+      helper.setAttribute('readonly', 'readonly');
+      helper.style.position = 'fixed';
+      helper.style.opacity = '0';
+      document.body.appendChild(helper);
+      helper.select();
+      document.execCommand('copy');
+      helper.remove();
+    }
+    updateStatusBadge('状态: 日志已复制');
+  } catch (error) {
+    pushLog(`复制日志失败: ${error && error.message ? error.message : error}`);
+  }
+}
+
+function onExportLogs() {
+  const text = getLogText();
+  if (!text) {
+    pushLog('暂无可导出的日志');
+    return;
+  }
+
+  const blob = new Blob([`${text}\n`], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[.:]/g, '-');
+  link.href = url;
+  link.download = `image-workbench-log-${stamp}.txt`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  updateStatusBadge('状态: 日志已导出');
+}
+
 function pushLog(message) {
   const item = document.createElement('div');
   item.className = 'log-item';
   const time = new Date().toLocaleTimeString();
+  const line = `${time} ${message}`;
+  state.ui.logs.unshift(line);
   item.innerHTML = `<time>${time}</time><p>${escapeHtml(message)}</p>`;
   refs.logList.prepend(item);
 }
@@ -1818,34 +1910,3 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

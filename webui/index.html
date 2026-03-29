@@ -381,6 +381,7 @@
                 <span>Pixiv Draft</span>
                 <div class="inline-grid wide">
                   <button id="testPixivUploadBtn" class="button ghost" type="button">Open Pixiv Draft</button>
+                  <button id="capturePixivDebugBtn" class="button ghost" type="button">Capture Pixiv Debug</button>
                 </div>
               </label>
               <label class="switch card-switch field full">
@@ -519,7 +520,11 @@
             <span class="panel-kicker">Activity</span>
             <h2>处理日志</h2>
           </div>
-          <button id="clearLogBtn" class="button ghost">清空日志</button>
+          <div class="log-actions">
+            <button id="copyLogBtn" class="button ghost">复制日志</button>
+            <button id="exportLogBtn" class="button ghost">导出日志</button>
+            <button id="clearLogBtn" class="button ghost">清空日志</button>
+          </div>
         </div>
         <div id="logList" class="log-list"></div>
       </section>

@@ -921,6 +921,32 @@ class WebviewBridge:
                 except Exception:
                     pass
 
+    def capture_interactive_pixiv_debug(self, tag_hint: str = "") -> Dict[str, Any]:
+        try:
+            uploader = self._interactive_pixiv_uploader
+            if uploader is None:
+                raise RuntimeError("当前没有保持打开的 Pixiv 草稿页，请先点击 Open Pixiv Draft。")
+
+            snapshot = uploader.capture_debug_snapshot(tag_hint=tag_hint)
+            logs = [
+                f"[Pixiv Debug] URL: {snapshot.get('url', '')}",
+                f"[Pixiv Debug] JSON: {snapshot.get('jsonPath', '')}",
+                f"[Pixiv Debug] HTML: {snapshot.get('htmlPath', '')}",
+                f"[Pixiv Debug] Screenshot: {snapshot.get('screenshotPath', '')}",
+                f"[Pixiv Debug] Tag count: {snapshot.get('tagCount', '')}",
+                f"[Pixiv Debug] Input: {snapshot.get('tagInputValue', '') or '<empty>'}",
+                f"[Pixiv Debug] Selected: {snapshot.get('selectedTagChips', [])}",
+                f"[Pixiv Debug] Inline: {snapshot.get('selectedTagInlineTokens', [])}",
+            ]
+            return {
+                "ok": True,
+                "logs": logs,
+                "snapshot": snapshot,
+                "message": "已抓取当前 Pixiv 投稿页调试快照",
+            }
+        except Exception as exc:
+            return self._error_response(exc)
+
     def fetch_pixiv_llm_models(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         try:
             pixiv_settings = self._normalize_pixiv_settings((settings or {}).get("pixiv", settings or {}))
