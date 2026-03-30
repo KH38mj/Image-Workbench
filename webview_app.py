@@ -863,9 +863,8 @@ class WebviewBridge:
         try:
             with self._lock:
                 normalized = self._normalize_settings(settings)
-                batch_settings = self._normalize_batch_settings((settings or {}).get("batch", {}))
                 pixiv_settings = self._normalize_pixiv_settings((settings or {}).get("pixiv", {}))
-                source_path = self._resolve_pixiv_preview_source(batch_settings)
+                source_path = self._require_current_pixiv_source()
                 self._config.update(normalized)
                 self._config["pixiv"] = pixiv_settings
                 self._save_config()
@@ -935,7 +934,11 @@ class WebviewBridge:
             return {
                 "ok": True,
                 "logs": messages,
-                "message": "已完成当前图片的 Pixiv 上传测试",
+                "message": (
+                    "已完成当前图片的 Pixiv 投稿流程"
+                    if (upload_mode == "direct" or pixiv_settings.get("auto_submit", True))
+                    else "已完成当前图片的 Pixiv 草稿准备"
+                ),
             }
         except Exception as exc:
             return {
@@ -2558,6 +2561,11 @@ class WebviewBridge:
                     return candidates[0]
 
         raise RuntimeError("请先加载一张图片，或先填写批量输入目录后再预览 Pixiv 投稿")
+
+    def _require_current_pixiv_source(self) -> Path:
+        if self._current_image_path and Path(self._current_image_path).exists():
+            return Path(self._current_image_path)
+        raise RuntimeError("请先加载或拖入一张图片，再执行当前图片的 Pixiv 投稿。")
 
     def _predict_pixiv_upload_name(self, result_path: Path) -> Tuple[str, str, bool]:
         suffix = result_path.suffix.lower()

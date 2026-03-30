@@ -211,6 +211,7 @@ function cacheRefs() {
     'resetPreviewBtn',
     'renderPreviewBtn',
     'exportBtn',
+    'quickPixivUploadBtn',
     'badgeSourceSize',
     'badgePreviewSize',
     'badgeRegionCount',
@@ -268,6 +269,7 @@ function bindEvents() {
   refs.startBatchBtn.addEventListener('click', onStartBatch);
   refs.stopBatchBtn.addEventListener('click', onStopBatch);
   refs.renderPreviewBtn.addEventListener('click', onRenderPreview);
+  refs.quickPixivUploadBtn.addEventListener('click', onTestPixivUploadCurrent);
   refs.exportBtn.addEventListener('click', onExport);
   refs.resetPreviewBtn.addEventListener('click', onResetPreview);
   refs.undoRegionBtn.addEventListener('click', undoLastRegion);
@@ -1067,20 +1069,30 @@ async function onPreviewPixivSubmission() {
 
 async function onTestPixivUploadCurrent() {
   refs.testPixivUploadBtn.disabled = true;
-  updateStatusBadge('状态: 正在处理当前图片并打开 Pixiv 草稿');
+  if (refs.quickPixivUploadBtn) {
+    refs.quickPixivUploadBtn.disabled = true;
+  }
+  const actionLabel = getPixivCurrentActionLabel();
+  updateStatusBadge(`状态: 正在${actionLabel}`);
   const result = await window.pywebview.api.test_pixiv_upload_current(buildSettings());
   if (!result.ok) {
     (result.logs || []).forEach((message) => pushLog(message));
-    pushLog(result.error || 'Pixiv 当前图片投稿准备失败');
-    updateStatusBadge('状态: Pixiv 当前图片投稿准备失败');
+    pushLog(result.error || `Pixiv ${actionLabel}失败`);
+    updateStatusBadge(`状态: Pixiv ${actionLabel}失败`);
     refs.testPixivUploadBtn.disabled = false;
+    if (refs.quickPixivUploadBtn) {
+      refs.quickPixivUploadBtn.disabled = false;
+    }
     syncPixivFieldState();
     return;
   }
 
   (result.logs || []).forEach((message) => pushLog(message));
-  updateStatusBadge(`状态: ${result.message || 'Pixiv 草稿页已就绪'}`);
+  updateStatusBadge(`状态: ${result.message || '当前图片的 Pixiv 流程已完成'}`);
   refs.testPixivUploadBtn.disabled = false;
+  if (refs.quickPixivUploadBtn) {
+    refs.quickPixivUploadBtn.disabled = false;
+  }
   syncPixivFieldState();
 }
 
@@ -1285,37 +1297,58 @@ function readPixivSettings() {
   };
 }
 
+function getPixivCurrentActionLabel() {
+  const directMode = refs.pixivUploadMode.value === 'direct';
+  const autoSubmit = refs.pixivSubmitMode.value === 'auto';
+  return (directMode || autoSubmit)
+    ? '处理并投稿当前图片'
+    : '处理并打开当前图片 Pixiv 草稿';
+}
+
+function getQuickPixivActionLabel() {
+  const directMode = refs.pixivUploadMode.value === 'direct';
+  const autoSubmit = refs.pixivSubmitMode.value === 'auto';
+  return (directMode || autoSubmit)
+    ? '单图一键投稿'
+    : '单图一键草稿';
+}
+
 function updatePixivModeHint() {
   const enabled = refs.pixivEnabled.checked;
   const directMode = refs.pixivUploadMode.value === 'direct';
   const llmEnabled = refs.pixivLlmEnabled.checked;
   const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
   const sexualMode = refs.pixivSexualDepiction.value || 'auto';
+  refs.testPixivUploadBtn.textContent = getPixivCurrentActionLabel();
+  if (refs.quickPixivUploadBtn) {
+    refs.quickPixivUploadBtn.textContent = getQuickPixivActionLabel();
+  }
   if (!enabled) {
-    refs.pixivModeHint.textContent = '自动标签会受到 Pixiv 当前 10 个标签上限的约束。启用后再决定是走浏览器确认，还是用 Cookie + CSRF 直传。';
+    refs.pixivModeHint.textContent = '启用后，首页和发布页的“当前图片”按钮都会只处理当前加载或拖入的这张图；如果改用直传模式，还需要补齐 Cookie 和 CSRF Token。';
     return;
   }
-  let message = directMode
-    ? '当前是 Cookie + CSRF 直传模式，会直接向 Pixiv 提交请求；即使你选择了手动确认，也不会停留在网页投稿页。'
-    : '当前是浏览器自动填写模式。手动投稿时，浏览器会停在投稿页，方便你确认标题、标签和说明是否符合预期。';
+  let message = '首页和发布页里的当前图片按钮，只会处理当前工作区中这张已加载或拖入的图片，不会读取批量目录。';
+  message += directMode
+    ? ' 当前会走 Cookie + CSRF 直传模式，处理完成后会直接尝试提交到 Pixiv。'
+    : ' 当前会先打开浏览器草稿页，方便你在 Pixiv 投稿页里再检查一次标题、标签和说明。';
   if (sexualMode === 'auto') {
     message += llmEnabled
-      ? ' 性描写会优先交给已接入的 LLM 自动判断；如果模型不可用或判断失败，会回退到本地规则兜底。'
-      : ' 性描写会使用本地规则自动判断；如果之后启用 LLM，它会优先交给模型来判定。';
+      ? ' 性描写选项目前交给 LLM 自动判断，会结合当前图片内容来决定。'
+      : ' 性描写选项当前仍是自动，但你还没启用 LLM，建议改成手动指定更稳。';
   } else if (sexualMode === 'yes') {
-    message += ' 性描写字段已固定为“有”。';
+    message += ' 性描写选项会固定为有。';
   } else if (sexualMode === 'no') {
-    message += ' 性描写字段已固定为“无”。';
+    message += ' 性描写选项会固定为无。';
   }
   if (llmEnabled && llmImageEnabled) {
-    message += ' 当前流程会先做看图打标，再把看图结果和 metadata 一起送去 OpenAI-compatible 接口生成最终 Pixiv 标签。';
+    message += ' 标签整理会同时参考 metadata 和看图结果，再经 OpenAI-compatible 模型收敛成更贴近 Pixiv 的标签。';
   } else if (llmEnabled) {
-    message += ' 当前启用了 LLM 综合润色，metadata 提示词会送去 OpenAI-compatible 接口整理成 Pixiv 风格标签。';
+    message += ' 标签整理当前只会基于 metadata，并交给 OpenAI-compatible 模型改写成更贴近 Pixiv 的表达。';
   }
   if (refs.pixivSafetyMode.value === 'strict') {
-    message += ' 当前启用了严格拦截，命中 NSFW 或幼态高风险标签时不会自动投稿。';
+    message += ' 严格安全模式下，疑似 NSFW 的图会先被拦下，不会自动投稿。';
   } else if (refs.pixivSafetyMode.value === 'auto') {
-    message += ' 当前启用了自动安全护栏，命中成人/猎奇标签会自动提升到 R-18 / R-18G，并拦截高风险未成年性化组合。';
+    message += ' 自动安全模式下，会结合内容与标签判断是否需要切到全年龄外的 R-18 / R-18G 设置。';
   }
   refs.pixivModeHint.textContent = message;
 }
@@ -1369,6 +1402,9 @@ function syncPixivFieldState() {
   refs.testPixivLlmBtn.disabled = !enabled || !llmEnabled;
   refs.previewPixivBtn.disabled = !enabled;
   refs.testPixivUploadBtn.disabled = !enabled;
+  if (refs.quickPixivUploadBtn) {
+    refs.quickPixivUploadBtn.disabled = !enabled;
+  }
   refs.capturePixivDebugBtn.disabled = !enabled || directMode;
   updatePixivModeHint();
 }
