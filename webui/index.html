@@ -331,6 +331,10 @@
                 <select id="pixivAge"></select>
               </label>
               <label class="field">
+                <span>性描写</span>
+                <select id="pixivSexualDepiction"></select>
+              </label>
+              <label class="field">
                 <span>自动投稿</span>
                 <select id="pixivSubmitMode">
                   <option value="manual">手动确认</option>
@@ -372,16 +376,16 @@
                 </div>
               </label>
               <label class="field full">
-                <span>Pixiv Preview</span>
+                <span>Pixiv 预览</span>
                 <div class="inline-grid wide">
-                  <button id="previewPixivBtn" class="button ghost" type="button">Build Pixiv Preview</button>
+                  <button id="previewPixivBtn" class="button ghost" type="button">预览当前 Pixiv 投稿</button>
                 </div>
               </label>
               <label class="field full">
-                <span>Pixiv Draft</span>
+                <span>Pixiv 投稿</span>
                 <div class="inline-grid wide">
-                  <button id="testPixivUploadBtn" class="button ghost" type="button">Open Pixiv Draft</button>
-                  <button id="capturePixivDebugBtn" class="button ghost" type="button">Capture Pixiv Debug</button>
+                  <button id="testPixivUploadBtn" class="button ghost" type="button">处理当前图片并打开 Pixiv 草稿</button>
+                  <button id="capturePixivDebugBtn" class="button ghost" type="button">抓取 Pixiv 调试快照</button>
                 </div>
               </label>
               <label class="switch card-switch field full">

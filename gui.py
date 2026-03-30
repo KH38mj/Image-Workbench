@@ -91,6 +91,7 @@ class ImageProcessorGUI:
                 "add_scale_tag": True,
                 "visibility": "public",
                 "age_restriction": "all",
+                "sexual_depiction": "auto",
                 "auto_submit": True,
             },
             "last_input_dir": "",
@@ -1435,6 +1436,7 @@ class ImageProcessorGUI:
             "add_scale_tag": self.pixiv_add_scale_tag.get(),
             "visibility": self.pixiv_visibility.get() or "public",
             "age_restriction": self.pixiv_age.get() or "all",
+            "sexual_depiction": "auto",
             "auto_submit": self.pixiv_auto_submit.get(),
         }
 
@@ -1743,6 +1745,7 @@ class ImageProcessorGUI:
                             tags=self.build_pixiv_tags(img_path),
                             visibility=pixiv_settings["visibility"],
                             age_restriction=pixiv_settings["age_restriction"],
+                            sexual_depiction=(pixiv_settings.get("age_restriction") == "R-18"),
                             ai_generated=pixiv_settings["ai_generated"],
                             auto_submit=pixiv_settings["auto_submit"],
                         )

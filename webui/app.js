@@ -170,6 +170,7 @@ function cacheRefs() {
     'pixivBrowser',
     'pixivVisibility',
     'pixivAge',
+    'pixivSexualDepiction',
     'pixivSubmitMode',
     'pixivTagLanguage',
     'pixivSafetyMode',
@@ -254,6 +255,7 @@ function bindEvents() {
   });
   refs.pixivUploadMode.addEventListener('change', syncPixivFieldState);
   refs.pixivSubmitMode.addEventListener('change', updatePixivModeHint);
+  refs.pixivSexualDepiction.addEventListener('change', updatePixivModeHint);
   refs.pixivSafetyMode.addEventListener('change', updatePixivModeHint);
   refs.pixivLlmEnabled.addEventListener('change', syncPixivFieldState);
   refs.pixivLlmImageEnabled.addEventListener('change', updatePixivModeHint);
@@ -320,6 +322,7 @@ function bindSettingsAutosave() {
     refs.pixivBrowser,
     refs.pixivVisibility,
     refs.pixivAge,
+    refs.pixivSexualDepiction,
     refs.pixivSubmitMode,
     refs.pixivTagLanguage,
     refs.pixivSafetyMode,
@@ -461,6 +464,7 @@ function hydrateStaticOptions(data) {
   fillSelect(refs.pixivBrowser, (data.pixivBrowserChannels || []).map((value) => ({ value, label: value })));
   fillSelect(refs.pixivVisibility, (data.pixivVisibilityOptions || []).map((value) => ({ value, label: value })));
   fillSelect(refs.pixivAge, (data.pixivAgeOptions || []).map((value) => ({ value, label: value })));
+  fillSelect(refs.pixivSexualDepiction, data.pixivSexualDepictionOptions || []);
   fillSelect(refs.pixivTagLanguage, data.pixivTagLanguageOptions || []);
   fillSelect(refs.pixivSafetyMode, data.pixivSafetyModeOptions || []);
   renderPixivLlmModelOptions([]);
@@ -840,6 +844,7 @@ function hydratePixivForm(pixiv) {
   ensureSelectValue(refs.pixivBrowser, pixiv.browser_channel || 'msedge');
   ensureSelectValue(refs.pixivVisibility, pixiv.visibility || 'public');
   ensureSelectValue(refs.pixivAge, pixiv.age_restriction || 'all');
+  ensureSelectValue(refs.pixivSexualDepiction, pixiv.sexual_depiction || 'auto');
   ensureSelectValue(refs.pixivTagLanguage, pixiv.tag_language || 'ja_priority');
   ensureSelectValue(refs.pixivSafetyMode, pixiv.safety_mode || 'auto');
   refs.pixivSubmitMode.value = pixiv.auto_submit ? 'auto' : 'manual';
@@ -1033,11 +1038,11 @@ async function onLoadPixivLlmModels() {
 
 async function onPreviewPixivSubmission() {
   refs.previewPixivBtn.disabled = true;
-  updateStatusBadge('Status: Building Pixiv preview');
+  updateStatusBadge('状态: 正在生成当前 Pixiv 投稿预览');
   const result = await window.pywebview.api.preview_pixiv_submission(buildSettings());
   if (!result.ok) {
-    pushLog(result.error || 'Pixiv preview failed');
-    updateStatusBadge('Status: Pixiv preview failed');
+    pushLog(result.error || 'Pixiv 投稿预览生成失败');
+    updateStatusBadge('状态: Pixiv 投稿预览生成失败');
     refs.previewPixivBtn.disabled = false;
     syncPixivFieldState();
     return;
@@ -1050,30 +1055,31 @@ async function onPreviewPixivSubmission() {
   pushLog(`[Pixiv Preview] Caption: ${preview.caption || '(empty)'}`);
   pushLog(`[Pixiv Preview] Mode: ${preview.uploadModeLabel || preview.uploadMode || ''} / ${preview.submitModeLabel || preview.submitMode || ''}`);
   pushLog(`[Pixiv Preview] Visibility: ${preview.visibilityLabel || preview.visibility || ''} / ${preview.ageRestrictionLabel || preview.ageRestriction || ''}`);
+  pushLog(`[Pixiv Preview] Sexual depiction: ${preview.sexualDepictionResolvedLabel || ''} (mode: ${preview.sexualDepictionModeLabel || ''}, source: ${preview.sexualDepictionSource || ''}${preview.sexualDepictionConfidence ? `, confidence: ${preview.sexualDepictionConfidence}` : ''}${preview.sexualDepictionReason ? `, reason: ${preview.sexualDepictionReason}` : ''})`);
   pushLog(`[Pixiv Preview] Upload file: ${preview.uploadFileName || ''} (${preview.uploadFormat || ''})`);
   (preview.infos || []).forEach((message) => pushLog(`[Pixiv Preview] ${message}`));
   (preview.warnings || []).forEach((message) => pushLog(`[Pixiv Preview] Warning: ${message}`));
   (preview.errors || []).forEach((message) => pushLog(`[Pixiv Preview] Error: ${message}`));
-  updateStatusBadge(`Status: ${result.message || 'Pixiv preview ready'}`);
+  updateStatusBadge(`状态: ${result.message || 'Pixiv 投稿预览已就绪'}`);
   refs.previewPixivBtn.disabled = false;
   syncPixivFieldState();
 }
 
 async function onTestPixivUploadCurrent() {
   refs.testPixivUploadBtn.disabled = true;
-  updateStatusBadge('Status: Opening Pixiv draft');
+  updateStatusBadge('状态: 正在处理当前图片并打开 Pixiv 草稿');
   const result = await window.pywebview.api.test_pixiv_upload_current(buildSettings());
   if (!result.ok) {
     (result.logs || []).forEach((message) => pushLog(message));
-    pushLog(result.error || 'Pixiv upload test failed');
-    updateStatusBadge('Status: Pixiv upload test failed');
+    pushLog(result.error || 'Pixiv 当前图片投稿准备失败');
+    updateStatusBadge('状态: Pixiv 当前图片投稿准备失败');
     refs.testPixivUploadBtn.disabled = false;
     syncPixivFieldState();
     return;
   }
 
   (result.logs || []).forEach((message) => pushLog(message));
-  updateStatusBadge(`Status: ${result.message || 'Pixiv draft ready'}`);
+  updateStatusBadge(`状态: ${result.message || 'Pixiv 草稿页已就绪'}`);
   refs.testPixivUploadBtn.disabled = false;
   syncPixivFieldState();
 }
@@ -1247,6 +1253,7 @@ function readPixivSettings() {
     browser_channel: refs.pixivBrowser.value,
     visibility: refs.pixivVisibility.value,
     age_restriction: refs.pixivAge.value,
+    sexual_depiction: refs.pixivSexualDepiction.value,
     auto_submit: refs.pixivSubmitMode.value === 'auto',
     tag_language: refs.pixivTagLanguage.value,
     safety_mode: refs.pixivSafetyMode.value,
@@ -1283,6 +1290,7 @@ function updatePixivModeHint() {
   const directMode = refs.pixivUploadMode.value === 'direct';
   const llmEnabled = refs.pixivLlmEnabled.checked;
   const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
+  const sexualMode = refs.pixivSexualDepiction.value || 'auto';
   if (!enabled) {
     refs.pixivModeHint.textContent = '自动标签会受到 Pixiv 当前 10 个标签上限的约束。启用后再决定是走浏览器确认，还是用 Cookie + CSRF 直传。';
     return;
@@ -1290,6 +1298,15 @@ function updatePixivModeHint() {
   let message = directMode
     ? '当前是 Cookie + CSRF 直传模式，会直接向 Pixiv 提交请求；即使你选择了手动确认，也不会停留在网页投稿页。'
     : '当前是浏览器自动填写模式。手动投稿时，浏览器会停在投稿页，方便你确认标题、标签和说明是否符合预期。';
+  if (sexualMode === 'auto') {
+    message += llmEnabled
+      ? ' 性描写会优先交给已接入的 LLM 自动判断；如果模型不可用或判断失败，会回退到本地规则兜底。'
+      : ' 性描写会使用本地规则自动判断；如果之后启用 LLM，它会优先交给模型来判定。';
+  } else if (sexualMode === 'yes') {
+    message += ' 性描写字段已固定为“有”。';
+  } else if (sexualMode === 'no') {
+    message += ' 性描写字段已固定为“无”。';
+  }
   if (llmEnabled && llmImageEnabled) {
     message += ' 当前流程会先做看图打标，再把看图结果和 metadata 一起送去 OpenAI-compatible 接口生成最终 Pixiv 标签。';
   } else if (llmEnabled) {
@@ -1313,6 +1330,7 @@ function syncPixivFieldState() {
     refs.pixivUploadMode,
     refs.pixivVisibility,
     refs.pixivAge,
+    refs.pixivSexualDepiction,
     refs.pixivSubmitMode,
     refs.pixivTagLanguage,
     refs.pixivSafetyMode,

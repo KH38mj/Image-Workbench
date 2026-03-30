@@ -202,6 +202,11 @@ PIXIV_TAG_LANGUAGE_OPTIONS = [
     {"value": "ja_priority", "label": "日文优先"},
     {"value": "dual_compact", "label": "双语精简"},
 ]
+PIXIV_SEXUAL_DEPICTION_OPTIONS = [
+    {"value": "auto", "label": "自动判断"},
+    {"value": "yes", "label": "有"},
+    {"value": "no", "label": "无"},
+]
 PIXIV_SENSITIVE_FIELDS = ("cookie", "csrf_token", "llm_api_key")
 PIXIV_SAFETY_MODE_OPTIONS = [
     {"value": "off", "label": "关闭"},
@@ -233,6 +238,32 @@ PIXIV_SEXUAL_KEYWORDS = {
     "パイズリ",
     "裸",
     "topless",
+}
+PIXIV_SUGGESTIVE_KEYWORDS = {
+    "bikini",
+    "swimsuit",
+    "underwear",
+    "lingerie",
+    "bra",
+    "panties",
+    "pantyshot",
+    "cleavage",
+    "sideboob",
+    "underboob",
+    "see-through",
+    "transparent clothes",
+    "wet clothes",
+    "micro bikini",
+    "水着",
+    "ビキニ",
+    "下着",
+    "ランジェリー",
+    "谷間",
+    "透け",
+    "透け服",
+    "乳袋",
+    "へそ",
+    "おへそ",
 }
 PIXIV_GRAPHIC_KEYWORDS = {
     "gore",
@@ -355,6 +386,7 @@ PIXIV_DEFAULTS = {
     "add_scale_tag": True,
     "visibility": "public",
     "age_restriction": "all",
+    "sexual_depiction": "auto",
     "auto_submit": True,
     "lock_tags": False,
 }
@@ -494,6 +526,7 @@ class WebviewBridge:
         self._batch_thread: Optional[threading.Thread] = None
         self._batch_job_counter = 0
         self._pixiv_llm_cache: Dict[str, List[str]] = {}
+        self._pixiv_llm_decision_cache: Dict[str, Dict[str, Any]] = {}
         self._interactive_pixiv_uploader: Optional[PixivUploader] = None
         self._interactive_pixiv_temp_dir = None
         self._hydrate_stored_llm_api_key()
@@ -541,6 +574,7 @@ class WebviewBridge:
                 "pixivBrowserChannels": PIXIV_BROWSER_CHANNELS,
                 "pixivVisibilityOptions": PIXIV_VISIBILITY_OPTIONS,
                 "pixivAgeOptions": PIXIV_AGE_OPTIONS,
+                "pixivSexualDepictionOptions": PIXIV_SEXUAL_DEPICTION_OPTIONS,
                 "pixivUploadModeOptions": PIXIV_UPLOAD_MODE_OPTIONS,
                 "pixivTagLanguageOptions": PIXIV_TAG_LANGUAGE_OPTIONS,
                 "pixivSafetyModeOptions": PIXIV_SAFETY_MODE_OPTIONS,
@@ -884,6 +918,7 @@ class WebviewBridge:
                 tags=tag_bundle["tags"],
                 visibility=pixiv_settings["visibility"],
                 age_restriction=tag_bundle["safety"]["effective_age"],
+                sexual_depiction=bool(tag_bundle["sexual_depiction"]["resolved"]),
                 ai_generated=pixiv_settings["ai_generated"],
                 auto_submit=pixiv_settings["auto_submit"],
                 lock_tags=pixiv_settings["lock_tags"],
@@ -1421,6 +1456,7 @@ class WebviewBridge:
                                 tags=pixiv_tags,
                                 visibility=pixiv_settings["visibility"],
                                 age_restriction=effective_age_restriction,
+                                sexual_depiction=bool(tag_bundle["sexual_depiction"]["resolved"]),
                                 ai_generated=pixiv_settings["ai_generated"],
                                 auto_submit=pixiv_settings["auto_submit"],
                                 lock_tags=pixiv_settings["lock_tags"],
@@ -1717,6 +1753,9 @@ class WebviewBridge:
             merged["safety_mode"] = "auto"
         merged["visibility"] = merged.get("visibility") or "public"
         merged["age_restriction"] = merged.get("age_restriction") or "all"
+        merged["sexual_depiction"] = str(merged.get("sexual_depiction") or "auto").strip().lower()
+        if merged["sexual_depiction"] not in {item["value"] for item in PIXIV_SEXUAL_DEPICTION_OPTIONS}:
+            merged["sexual_depiction"] = "auto"
         for key in (
             "enabled",
             "use_metadata_tags",
@@ -1994,6 +2033,42 @@ class WebviewBridge:
             sort_keys=True,
         )
 
+    def _pixiv_llm_sexual_cache_key(
+        self,
+        *,
+        metadata_tags: List[str],
+        final_tags: List[str],
+        pixiv_settings: Dict[str, Any],
+        safety: Dict[str, Any],
+    ) -> str:
+        return json.dumps(
+            {
+                "kind": "sexual_depiction",
+                "metadata_tags": metadata_tags,
+                "final_tags": final_tags,
+                "effective_age": safety.get("effective_age", ""),
+                "sexual_hits": safety.get("sexual_hits", []),
+                "graphic_hits": safety.get("graphic_hits", []),
+                "minor_hits": safety.get("minor_hits", []),
+                "base_url": pixiv_settings.get("llm_base_url", ""),
+                "model": pixiv_settings.get("llm_model", ""),
+                "temperature": pixiv_settings.get("llm_temperature", 0.1),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _build_pixiv_llm_tagger(self, pixiv_settings: Dict[str, Any]) -> OpenAICompatiblePixivTagger:
+        return OpenAICompatiblePixivTagger(
+            base_url=pixiv_settings.get("llm_base_url", ""),
+            api_key=pixiv_settings.get("llm_api_key", ""),
+            model=pixiv_settings.get("llm_model", ""),
+            temperature=pixiv_settings.get("llm_temperature", 0.1),
+            timeout=pixiv_settings.get("llm_timeout", 60),
+            system_prompt=pixiv_settings.get("llm_metadata_prompt", "") or None,
+            vision_system_prompt=pixiv_settings.get("llm_image_prompt", "") or None,
+        )
+
     def _generate_llm_pixiv_tags(
         self,
         metadata_tags: List[str],
@@ -2026,15 +2101,7 @@ class WebviewBridge:
             return cached
 
         try:
-            tagger = OpenAICompatiblePixivTagger(
-                base_url=pixiv_settings.get("llm_base_url", ""),
-                api_key=pixiv_settings.get("llm_api_key", ""),
-                model=pixiv_settings.get("llm_model", ""),
-                temperature=pixiv_settings.get("llm_temperature", 0.1),
-                timeout=pixiv_settings.get("llm_timeout", 60),
-                system_prompt=pixiv_settings.get("llm_metadata_prompt", "") or None,
-                vision_system_prompt=pixiv_settings.get("llm_image_prompt", "") or None,
-            )
+            tagger = self._build_pixiv_llm_tagger(pixiv_settings)
             llm_tags = tagger.generate_tags(metadata_tags, image_tags=image_tags, limit=PIXIV_TAG_LIMIT)
             if use_cache:
                 self._pixiv_llm_cache[cache_key] = list(llm_tags)
@@ -2089,15 +2156,7 @@ class WebviewBridge:
             return cached
 
         try:
-            tagger = OpenAICompatiblePixivTagger(
-                base_url=pixiv_settings.get("llm_base_url", ""),
-                api_key=pixiv_settings.get("llm_api_key", ""),
-                model=pixiv_settings.get("llm_model", ""),
-                temperature=pixiv_settings.get("llm_temperature", 0.1),
-                timeout=pixiv_settings.get("llm_timeout", 60),
-                system_prompt=pixiv_settings.get("llm_metadata_prompt", "") or None,
-                vision_system_prompt=pixiv_settings.get("llm_image_prompt", "") or None,
-            )
+            tagger = self._build_pixiv_llm_tagger(pixiv_settings)
             llm_tags = tagger.generate_tags_from_image(candidate, limit=PIXIV_TAG_LIMIT)
             if use_cache and cache_key:
                 self._pixiv_llm_cache[cache_key] = list(llm_tags)
@@ -2196,6 +2255,119 @@ class WebviewBridge:
             "errors": errors,
             "blocked": blocked,
         }
+
+    def _resolve_pixiv_sexual_depiction(
+        self,
+        *,
+        metadata_tags: List[str],
+        final_tags: List[str],
+        pixiv_settings: Dict[str, Any],
+        safety: Dict[str, Any],
+        info_messages: Optional[List[str]] = None,
+        warning_messages: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        mode = str(pixiv_settings.get("sexual_depiction") or "auto").strip().lower()
+        mode_labels = {
+            "auto": "自动判断",
+            "yes": "有",
+            "no": "无",
+        }
+
+        def build_result(resolved: bool, *, source: str, reason: str = "", confidence: str = "") -> Dict[str, Any]:
+            return {
+                "mode": mode,
+                "mode_label": mode_labels.get(mode, mode),
+                "resolved": bool(resolved),
+                "resolved_label": "有" if resolved else "无",
+                "source": source,
+                "reason": str(reason or "").strip(),
+                "confidence": str(confidence or "").strip().lower(),
+            }
+
+        if mode == "yes":
+            result = build_result(True, source="manual", reason="manual_yes")
+            if info_messages is not None:
+                info_messages.append("性描写已按配置固定为“有”。")
+            return result
+        if mode == "no":
+            result = build_result(False, source="manual", reason="manual_no")
+            if info_messages is not None:
+                info_messages.append("性描写已按配置固定为“无”。")
+            return result
+
+        llm_ready = bool(
+            pixiv_settings.get("llm_enabled", False)
+            and pixiv_settings.get("llm_base_url")
+            and pixiv_settings.get("llm_model")
+        )
+        if llm_ready:
+            cache_key = self._pixiv_llm_sexual_cache_key(
+                metadata_tags=metadata_tags,
+                final_tags=final_tags,
+                pixiv_settings=pixiv_settings,
+                safety=safety,
+            )
+            cached = self._pixiv_llm_decision_cache.get(cache_key)
+            if cached is not None:
+                if info_messages is not None:
+                    info_messages.append(
+                        f"已复用缓存的性描写自动判断结果：{cached['resolved_label']}。"
+                    )
+                return dict(cached)
+
+            try:
+                tagger = self._build_pixiv_llm_tagger(pixiv_settings)
+                decision = tagger.classify_sexual_depiction(
+                    metadata_tags=metadata_tags,
+                    final_tags=final_tags,
+                    age_restriction=safety.get("effective_age", "all"),
+                    sexual_hits=safety.get("sexual_hits", []),
+                    graphic_hits=safety.get("graphic_hits", []),
+                    minor_hits=safety.get("minor_hits", []),
+                )
+                result = build_result(
+                    bool(decision.get("sexual")),
+                    source="llm",
+                    reason=str(decision.get("reason") or "").strip(),
+                    confidence=str(decision.get("confidence") or "").strip().lower(),
+                )
+                self._pixiv_llm_decision_cache[cache_key] = dict(result)
+                if info_messages is not None:
+                    confidence_text = f"（置信度 {result['confidence']}）" if result["confidence"] else ""
+                    reason_text = f"，依据：{result['reason']}" if result["reason"] else ""
+                    info_messages.append(
+                        f"LLM 已自动判断性描写为“{result['resolved_label']}”{confidence_text}{reason_text}。"
+                    )
+                return result
+            except Exception as exc:
+                if warning_messages is not None:
+                    warning_messages.append(f"LLM 性描写判断失败，已回退到本地规则：{exc}")
+
+        suggestive_hits = self._detect_keyword_hits(metadata_tags + final_tags, PIXIV_SUGGESTIVE_KEYWORDS)
+        effective_age = str(safety.get("effective_age") or "all")
+        explicit_hits = list(safety.get("sexual_hits") or [])
+        graphic_hits = list(safety.get("graphic_hits") or [])
+
+        if explicit_hits or effective_age == "R-18":
+            result = build_result(True, source="heuristic", reason="explicit_or_r18")
+        elif suggestive_hits:
+            result = build_result(True, source="heuristic", reason="suggestive_keywords")
+        elif effective_age == "R-18G" and graphic_hits:
+            result = build_result(False, source="heuristic", reason="graphic_only")
+        else:
+            result = build_result(False, source="heuristic", reason="default_safe")
+
+        if info_messages is not None:
+            reason_map = {
+                "explicit_or_r18": "命中成人标签或分级",
+                "suggestive_keywords": "命中轻度性暗示标签",
+                "graphic_only": "仅命中猎奇/重口味信号",
+                "default_safe": "未命中性描写信号",
+            }
+            info_messages.append(
+                f"性描写自动判断已回退到本地规则：{result['resolved_label']}（{reason_map.get(result['reason'], result['reason'])}）。"
+            )
+        return result
 
     def _build_pixiv_tags(
         self,
@@ -2342,6 +2514,14 @@ class WebviewBridge:
             source_tags=metadata_tags,
             pixiv_settings=pixiv_settings,
         )
+        sexual_depiction = self._resolve_pixiv_sexual_depiction(
+            metadata_tags=metadata_tags,
+            final_tags=tags,
+            pixiv_settings=pixiv_settings,
+            safety=safety,
+            info_messages=infos,
+            warning_messages=warnings,
+        )
         infos.extend(safety["infos"])
         warnings.extend(safety["warnings"])
         errors.extend(safety["errors"])
@@ -2355,6 +2535,7 @@ class WebviewBridge:
             "warnings": warnings,
             "errors": errors,
             "safety": safety,
+            "sexual_depiction": sexual_depiction,
         }
 
     def _resolve_pixiv_preview_source(self, batch_settings: Optional[Dict[str, Any]] = None) -> Path:
@@ -2435,6 +2616,11 @@ class WebviewBridge:
             "R-18": "R-18",
             "R-18G": "R-18G",
         }
+        sexual_mode_labels = {
+            "auto": "自动判断",
+            "yes": "有",
+            "no": "无",
+        }
 
         errors: List[str] = []
         warnings: List[str] = []
@@ -2446,6 +2632,7 @@ class WebviewBridge:
         warnings.extend(tag_bundle["warnings"])
         errors.extend(tag_bundle["errors"])
         effective_age_restriction = tag_bundle["safety"]["effective_age"]
+        sexual_depiction = tag_bundle["sexual_depiction"]
 
         if not pixiv_settings.get("enabled", False):
             infos.append("当前还没有启用 Pixiv 自动上传；这次只是生成投稿预览，不会实际投稿。")
@@ -2502,6 +2689,16 @@ class WebviewBridge:
                 effective_age_restriction, effective_age_restriction
             ),
             "configuredAgeRestriction": pixiv_settings["age_restriction"],
+            "sexualDepictionMode": pixiv_settings.get("sexual_depiction", "auto"),
+            "sexualDepictionModeLabel": sexual_mode_labels.get(
+                pixiv_settings.get("sexual_depiction", "auto"),
+                pixiv_settings.get("sexual_depiction", "auto"),
+            ),
+            "sexualDepictionResolved": bool(sexual_depiction["resolved"]),
+            "sexualDepictionResolvedLabel": sexual_depiction["resolved_label"],
+            "sexualDepictionSource": sexual_depiction["source"],
+            "sexualDepictionReason": sexual_depiction.get("reason", ""),
+            "sexualDepictionConfidence": sexual_depiction.get("confidence", ""),
             "submitMode": "auto" if pixiv_settings.get("auto_submit", True) else "manual",
             "submitModeLabel": "自动投稿" if pixiv_settings.get("auto_submit", True) else "手动确认",
             "uploadFileName": upload_file_name,

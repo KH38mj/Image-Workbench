@@ -1499,6 +1499,31 @@ class _BrowserPixivUploader(_BasePixivUploader):
             return True
         return self._click_text(page, mapping[value])
 
+    def _set_sexual_depiction_choice(self, page, enabled: bool) -> bool:
+        return self._set_choice(
+            page,
+            "yes" if enabled else "no",
+            {
+                "yes": [
+                    "有",
+                    "Yes",
+                    "あり",
+                    "性描写あり",
+                    "性的表現あり",
+                    "Slightly sexual content",
+                ],
+                "no": [
+                    "无",
+                    "No",
+                    "なし",
+                    "性描写なし",
+                    "性的表現なし",
+                    "No sexual depiction",
+                ],
+            },
+            group_labels=["性描写", "Sexual depiction", "Slightly sexual content", "性的表現"],
+        )
+
     def upload_image(
         self,
         image_path: Path,
@@ -1508,6 +1533,7 @@ class _BrowserPixivUploader(_BasePixivUploader):
         tags: List[str],
         visibility: str,
         age_restriction: str,
+        sexual_depiction: bool,
         ai_generated: bool,
         auto_submit: bool,
         lock_tags: bool = False,
@@ -1580,6 +1606,12 @@ class _BrowserPixivUploader(_BasePixivUploader):
             },
             group_labels=["公开范围", "Visibility", "公開範囲"],
         )
+        sexual_choice_applied = self._set_sexual_depiction_choice(page, sexual_depiction)
+        if not sexual_choice_applied:
+            message = "[Pixiv] 未能定位性描写选项，请手动确认该字段。"
+            if auto_submit:
+                raise RuntimeError(message)
+            self._log(message)
 
         if auto_submit:
             if not self._click_text(page, ["Post", "Submit", "投稿する", "公开する", "投稿"]):
@@ -1665,6 +1697,7 @@ class _DirectPixivUploader(_BasePixivUploader):
         tags: List[str],
         visibility: str,
         age_restriction: str,
+        sexual_depiction: bool,
         ai_generated: bool,
         lock_tags: bool,
         file_key: str,
@@ -1688,11 +1721,10 @@ class _DirectPixivUploader(_BasePixivUploader):
             ("ratings[religion]", "false"),
             ("ratings[thoughts]", "false"),
             ("ratings[violent]", "false"),
+            ("sexual", "true" if sexual_depiction else "false"),
             ("imageOrder[0][fileKey]", file_key),
             ("imageOrder[0][type]", "newFile"),
         ]
-        if age_restriction == "all":
-            payload.append(("sexual", "false"))
         if ai_generated:
             payload.append(("aiType", "aiGenerated"))
         for tag in normalized_tags:
@@ -1745,6 +1777,7 @@ class _DirectPixivUploader(_BasePixivUploader):
         tags: List[str],
         visibility: str,
         age_restriction: str,
+        sexual_depiction: bool,
         ai_generated: bool,
         auto_submit: bool,
         lock_tags: bool = False,
@@ -1763,6 +1796,7 @@ class _DirectPixivUploader(_BasePixivUploader):
             tags=tags,
             visibility=visibility,
             age_restriction=age_restriction,
+            sexual_depiction=sexual_depiction,
             ai_generated=ai_generated,
             lock_tags=lock_tags,
             file_key=file_key,
@@ -1826,6 +1860,7 @@ class PixivUploader:
         tags: List[str],
         visibility: str,
         age_restriction: str,
+        sexual_depiction: bool,
         ai_generated: bool,
         auto_submit: bool,
         lock_tags: bool = False,
@@ -1837,6 +1872,7 @@ class PixivUploader:
             tags=tags,
             visibility=visibility,
             age_restriction=age_restriction,
+            sexual_depiction=sexual_depiction,
             ai_generated=ai_generated,
             auto_submit=auto_submit,
             lock_tags=lock_tags,
