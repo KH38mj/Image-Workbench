@@ -23,6 +23,8 @@ const state = {
   },
   ui: {
     sidebarPage: 'file',
+    compactMode: false,
+    logFilter: 'all',
     fontPreviewToken: 0,
     fontPreviewFace: null,
     onlineFontItems: [],
@@ -104,6 +106,7 @@ async function init() {
   hydrateStaticOptions(result);
   hydrateForm(result.config);
   initSidebarTabs();
+  initUiPreferences();
   updateRecentImages(result.recentImages || []);
   renderRegionChips();
 
@@ -244,6 +247,7 @@ function cacheRefs() {
     'copyLogBtn',
     'exportLogBtn',
     'clearLogBtn',
+    'compactModeBtn',
   ];
 
   ids.forEach((id) => {
@@ -294,6 +298,17 @@ function bindEvents() {
   document.querySelectorAll('.sidebar-tab').forEach((button) => {
     button.addEventListener('click', () => {
       setSidebarPage(button.dataset.page || 'file');
+    });
+  });
+  refs.compactModeBtn?.addEventListener('click', toggleCompactMode);
+  document.querySelectorAll('[data-log-filter]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setLogFilter(button.dataset.logFilter || 'all');
+    });
+  });
+  document.querySelectorAll('.fold-card[id]').forEach((details) => {
+    details.addEventListener('toggle', () => {
+      saveFoldState(details.id, details.open);
     });
   });
   refs.wmFontPreset.addEventListener('change', onWatermarkFontPresetChange);
@@ -460,6 +475,77 @@ function setSidebarPage(page) {
   } catch (error) {
     // ignore storage failures
   }
+}
+
+function initUiPreferences() {
+  let compactMode = false;
+  let logFilter = 'all';
+  try {
+    compactMode = window.localStorage.getItem('imageWorkbench.compactMode') === 'true';
+    logFilter = window.localStorage.getItem('imageWorkbench.logFilter') || 'all';
+  } catch (error) {
+    compactMode = false;
+    logFilter = 'all';
+  }
+  applyCompactMode(compactMode);
+  restoreFoldStates();
+  setLogFilter(logFilter);
+}
+
+function applyCompactMode(enabled) {
+  const active = !!enabled;
+  state.ui.compactMode = active;
+  document.body.classList.toggle('density-compact', active);
+  if (refs.compactModeBtn) {
+    refs.compactModeBtn.textContent = active ? '紧凑模式：开' : '紧凑模式：关';
+    refs.compactModeBtn.dataset.state = active ? 'compact' : 'comfortable';
+  }
+  try {
+    window.localStorage.setItem('imageWorkbench.compactMode', active ? 'true' : 'false');
+  } catch (error) {
+    // ignore storage failures
+  }
+}
+
+function toggleCompactMode() {
+  applyCompactMode(!state.ui.compactMode);
+}
+
+function saveFoldState(id, open) {
+  try {
+    window.localStorage.setItem(`imageWorkbench.fold.${id}`, open ? 'true' : 'false');
+  } catch (error) {
+    // ignore storage failures
+  }
+}
+
+function restoreFoldStates() {
+  document.querySelectorAll('.fold-card[id]').forEach((details) => {
+    try {
+      const saved = window.localStorage.getItem(`imageWorkbench.fold.${details.id}`);
+      if (saved !== null) {
+        details.open = saved === 'true';
+      }
+    } catch (error) {
+      // ignore storage failures
+    }
+  });
+}
+
+function setLogFilter(filter) {
+  const next = ['all', 'task', 'pixiv', 'error'].includes(filter) ? filter : 'all';
+  state.ui.logFilter = next;
+  document.querySelectorAll('[data-log-filter]').forEach((button) => {
+    const active = (button.dataset.logFilter || 'all') === next;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  try {
+    window.localStorage.setItem('imageWorkbench.logFilter', next);
+  } catch (error) {
+    // ignore storage failures
+  }
+  renderLogs();
 }
 
 function hydrateWatermarkFontOptions(items) {
@@ -1981,8 +2067,41 @@ function hideStartupOverlay() {
   refs.startupOverlay.classList.add('hidden');
 }
 
+function getVisibleLogs() {
+  return (state.ui.logs || []).filter((entry) => logMatchesFilter(entry, state.ui.logFilter || 'all'));
+}
+
 function getLogText() {
-  return state.ui.logs.join('\n\n');
+  return getVisibleLogs().map((entry) => entry.line).join('\n\n');
+}
+
+function logMatchesFilter(entry, filter) {
+  const message = String(entry?.message || '');
+  const normalized = message.toLowerCase();
+  if (filter === 'pixiv') {
+    return normalized.includes('pixiv');
+  }
+  if (filter === 'error') {
+    return /错误|失败|error:|warning:|traceback/i.test(message);
+  }
+  if (filter === 'task') {
+    return /开始处理|处理完成|水印完成|打码完成|超分完成|批量|当前图片|导出|预览|已加载|载入/i.test(message);
+  }
+  return true;
+}
+
+function createLogElement(entry) {
+  const item = document.createElement('div');
+  item.className = 'log-item';
+  item.innerHTML = `<time>${entry.time}</time><p>${escapeHtml(entry.message)}</p>`;
+  return item;
+}
+
+function renderLogs() {
+  refs.logList.innerHTML = '';
+  getVisibleLogs().forEach((entry) => {
+    refs.logList.appendChild(createLogElement(entry));
+  });
 }
 
 async function onCopyLogs() {
@@ -2033,13 +2152,14 @@ function onExportLogs() {
 }
 
 function pushLog(message) {
-  const item = document.createElement('div');
-  item.className = 'log-item';
   const time = new Date().toLocaleTimeString();
-  const line = `${time} ${message}`;
-  state.ui.logs.unshift(line);
-  item.innerHTML = `<time>${time}</time><p>${escapeHtml(message)}</p>`;
-  refs.logList.prepend(item);
+  const safeMessage = String(message || '');
+  state.ui.logs.unshift({
+    time,
+    message: safeMessage,
+    line: `${time} ${safeMessage}`,
+  });
+  renderLogs();
 }
 
 function escapeHtml(value) {

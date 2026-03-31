@@ -353,6 +353,11 @@
                 <span>安全策略</span>
                 <select id="pixivSafetyMode"></select>
               </label>
+              <div class="field full fold-span">
+                <details class="fold-card" id="pixivAdvancedSection">
+                  <summary>高级设置</summary>
+                  <div class="fold-content">
+                    <div class="field-grid">
               <label class="field full">
                 <span>浏览器资料目录</span>
                 <div class="inline-grid wide">
@@ -423,6 +428,10 @@
                 <span>看图打标 Prompt</span>
                 <textarea id="pixivLlmPromptImage" rows="5" placeholder="可选。留空时使用内置看图打标 prompt。"></textarea>
               </label>
+                    </div>
+                  </div>
+                </details>
+              </div>
               <label class="field full">
                 <span>标题模板</span>
                 <input type="text" id="pixivTitleTemplate" placeholder="支持 {stem} / {name}">
@@ -464,11 +473,14 @@
           <div class="eyebrow">Dual Preview Desk</div>
           <h2>源图选区 + 结果预览</h2>
         </div>
-        <div class="workspace-badges">
-          <span class="badge" id="badgeSourceSize">源图: -</span>
-          <span class="badge" id="badgePreviewSize">结果: -</span>
-          <span class="badge" id="badgeRegionCount">选区: 0</span>
-          <span class="badge accent" id="badgeStatus">状态: 等待载入</span>
+        <div class="workspace-header-actions">
+          <button id="compactModeBtn" class="button ghost" type="button">紧凑模式：关</button>
+          <div class="workspace-badges">
+            <span class="badge" id="badgeSourceSize">源图: -</span>
+            <span class="badge" id="badgePreviewSize">结果: -</span>
+            <span class="badge" id="badgeRegionCount">选区: 0</span>
+            <span class="badge accent" id="badgeStatus">状态: 等待载入</span>
+          </div>
         </div>
       </header>
 
@@ -533,6 +545,12 @@
             <button id="exportLogBtn" class="button ghost">导出日志</button>
             <button id="clearLogBtn" class="button ghost">清空日志</button>
           </div>
+        </div>
+        <div class="log-filter-bar">
+          <button class="mini-chip log-filter-btn is-active" type="button" data-log-filter="all" aria-pressed="true">全部</button>
+          <button class="mini-chip log-filter-btn" type="button" data-log-filter="task" aria-pressed="false">任务中</button>
+          <button class="mini-chip log-filter-btn" type="button" data-log-filter="pixiv" aria-pressed="false">Pixiv</button>
+          <button class="mini-chip log-filter-btn" type="button" data-log-filter="error" aria-pressed="false">错误</button>
         </div>
         <div id="logList" class="log-list"></div>
       </section>

@@ -1678,6 +1678,13 @@ class WebviewBridge:
             "recent_downloaded_fonts": [],
             "last_input_dir": "",
             "last_output_dir": "",
+            "window": {
+                "width": 1600,
+                "height": 980,
+                "x": None,
+                "y": None,
+                "maximized": False,
+            },
             "order": ORDER_OPTIONS[0],
             "watermark": {
                 "enabled": True,
@@ -1738,6 +1745,60 @@ class WebviewBridge:
             for field in PIXIV_SENSITIVE_FIELDS:
                 persisted["pixiv"][field] = ""
         CONFIG_PATH.write_text(json.dumps(persisted, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _remember_window_state(
+        self,
+        *,
+        window=None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        maximized: Optional[bool] = None,
+    ) -> None:
+        try:
+            with self._lock:
+                state = dict(self._config.get("window", {}) or {})
+                if width is not None:
+                    state["width"] = max(960, int(width))
+                if height is not None:
+                    state["height"] = max(620, int(height))
+                if x is not None:
+                    state["x"] = int(x)
+                if y is not None:
+                    state["y"] = int(y)
+                if maximized is not None:
+                    state["maximized"] = bool(maximized)
+
+                if window is not None:
+                    if maximized is not True:
+                        try:
+                            state["width"] = max(960, int(window.width))
+                            state["height"] = max(620, int(window.height))
+                        except Exception:
+                            pass
+                        try:
+                            state["x"] = int(window.x)
+                            state["y"] = int(window.y)
+                        except Exception:
+                            pass
+
+                self._config["window"] = state
+                self._save_config()
+        except Exception:
+            pass
+
+    def on_window_resized(self, width: int, height: int) -> None:
+        self._remember_window_state(width=width, height=height)
+
+    def on_window_moved(self, x: int, y: int) -> None:
+        self._remember_window_state(x=x, y=y)
+
+    def on_window_maximized(self) -> None:
+        self._remember_window_state(maximized=True)
+
+    def on_window_restored(self, window=None) -> None:
+        self._remember_window_state(window=window, maximized=False)
 
     def _hydrate_stored_llm_api_key(self) -> None:
         pixiv_settings = self._config.get("pixiv", {})
@@ -2990,17 +3051,25 @@ def main():
     _write_boot_log(f"Python: {sys.executable} ({sys.version.split()[0]})")
     api = WebviewBridge()
     _write_boot_log("WebviewBridge 初始化完成")
+    window_state = dict(api._config.get("window", {}) or {})
     window = webview.create_window(
         title="Image Workbench",
         url=str(entrypoint.resolve()),
         js_api=api,
-        width=1600,
-        height=980,
-        min_size=(1280, 780),
+        width=int(window_state.get("width") or 1600),
+        height=int(window_state.get("height") or 980),
+        x=window_state.get("x"),
+        y=window_state.get("y"),
+        maximized=bool(window_state.get("maximized", False)),
+        min_size=(1080, 680),
         background_color="#0f172a",
         text_select=False,
     )
     api._attach_window(window)
+    window.events.resized += api.on_window_resized
+    window.events.moved += api.on_window_moved
+    window.events.maximized += api.on_window_maximized
+    window.events.restored += api.on_window_restored
     _write_boot_log("窗口创建完成，准备进入 webview.start")
     webview.start(debug=False, http_server=True)
     _write_boot_log("webview.start 已退出")
