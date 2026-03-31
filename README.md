@@ -58,7 +58,7 @@
 - 修复 Pixiv 浏览器投稿页里 token/chip 型标签输入框的兼容问题
 - 避免在追加下一个标签时误删前一个已经确认的标签
 - 改进 Pixiv 标签容器定位与标签确认逻辑
-- 新增 `Capture Pixiv Debug` 调试入口，便于抓取投稿页 HTML / JSON / 截图
+- 新增 `抓取 Pixiv 调试快照` 调试入口，便于抓取投稿页 HTML / JSON / 截图
 
 ## 项目结构
 
@@ -199,9 +199,9 @@ python main.py pipeline `
 
 如果浏览器投稿页的标签行为异常，可以这样抓现场：
 
-1. 在工作台里点击 `Open Pixiv Draft`
+1. 在工作台里点击 `处理当前图片并打开 Pixiv 草稿`，或首页的 `单图一键草稿`
 2. 保持 Pixiv 投稿页打开
-3. 点击 `Capture Pixiv Debug`
+3. 点击 `抓取 Pixiv 调试快照`
 4. 到 `tmp_pixiv_diag/` 查看输出的 `.json`、`.html`、`.png`
 
 这套快照主要用于排查：

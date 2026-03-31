@@ -12,6 +12,15 @@ const state = {
     nextOffset: 0,
     polling: false,
   },
+  pixivCurrent: {
+    jobId: 0,
+    nextOffset: 0,
+    polling: false,
+    running: false,
+    completed: false,
+    failed: false,
+    draftReady: false,
+  },
   ui: {
     sidebarPage: 'file',
     fontPreviewToken: 0,
@@ -29,6 +38,7 @@ const refs = {};
 let initialized = false;
 let startupFallbackTimer = null;
 let batchPollHandle = null;
+let pixivCurrentPollHandle = null;
 let settingsSaveHandle = null;
 const PIXIV_AUTOSAVE_DELAY = 500;
 const DEFAULT_WATERMARK_SAMPLE = 'YourName · 水印预览 2026';
@@ -307,7 +317,10 @@ function bindEvents() {
   window.addEventListener('mousemove', onSourceMouseMove);
   window.addEventListener('mouseup', onSourceMouseUp);
   window.addEventListener('keydown', onWorkspaceKeyDown);
-  window.addEventListener('beforeunload', stopBatchPolling);
+  window.addEventListener('beforeunload', () => {
+    stopBatchPolling();
+    stopPixivCurrentPolling();
+  });
 
   [refs.sourceViewport, refs.resultViewport].forEach((element) => {
     element.addEventListener('dragenter', onWorkspaceDragEnter);
@@ -507,6 +520,7 @@ function hydrateForm(config) {
   syncPixivFieldState();
   renderRecentDownloadedFonts(state.bootstrap?.recentDownloadedFonts || []);
   applyBatchSnapshot(state.bootstrap?.batch || {}, { pushLogs: false });
+  applyPixivCurrentSnapshot(state.bootstrap?.pixivCurrent || {}, { pushLogs: false });
   state.ui.lastSavedSettingsSnapshot = JSON.stringify(buildSettings());
   updatePixivSaveState('配置改动会自动保存；敏感凭证不会落盘。', 'idle');
 }
@@ -1068,32 +1082,22 @@ async function onPreviewPixivSubmission() {
 }
 
 async function onTestPixivUploadCurrent() {
-  refs.testPixivUploadBtn.disabled = true;
-  if (refs.quickPixivUploadBtn) {
-    refs.quickPixivUploadBtn.disabled = true;
-  }
   const actionLabel = getPixivCurrentActionLabel();
-  updateStatusBadge(`状态: 正在${actionLabel}`);
-  const result = await window.pywebview.api.test_pixiv_upload_current(buildSettings());
-  if (!result.ok) {
-    (result.logs || []).forEach((message) => pushLog(message));
-    pushLog(result.error || `Pixiv ${actionLabel}失败`);
-    updateStatusBadge(`状态: Pixiv ${actionLabel}失败`);
-    refs.testPixivUploadBtn.disabled = false;
-    if (refs.quickPixivUploadBtn) {
-      refs.quickPixivUploadBtn.disabled = false;
+  updateStatusBadge(`状态: 正在准备${actionLabel}`);
+  try {
+    const result = await window.pywebview.api.start_pixiv_upload_current(buildSettings());
+    if (!result.ok) {
+      (result.logs || []).forEach((message) => pushLog(message));
+      pushLog(result.error || `Pixiv ${actionLabel}失败`);
+      updateStatusBadge(`状态: Pixiv ${actionLabel}失败`);
+      syncPixivFieldState();
+      return;
     }
-    syncPixivFieldState();
-    return;
+    applyPixivCurrentSnapshot(result);
+  } catch (error) {
+    pushLog(`Pixiv ${actionLabel}失败: ${error && error.message ? error.message : error}`);
+    updateStatusBadge(`状态: Pixiv ${actionLabel}失败`);
   }
-
-  (result.logs || []).forEach((message) => pushLog(message));
-  updateStatusBadge(`状态: ${result.message || '当前图片的 Pixiv 流程已完成'}`);
-  refs.testPixivUploadBtn.disabled = false;
-  if (refs.quickPixivUploadBtn) {
-    refs.quickPixivUploadBtn.disabled = false;
-  }
-  syncPixivFieldState();
 }
 
 function getFirstPixivTagHint() {
@@ -1105,21 +1109,21 @@ function getFirstPixivTagHint() {
 
 async function onCapturePixivDebug() {
   refs.capturePixivDebugBtn.disabled = true;
-  updateStatusBadge('Status: Capturing Pixiv debug snapshot');
+  updateStatusBadge('状态: 正在抓取 Pixiv 调试快照');
   try {
     const result = await window.pywebview.api.capture_interactive_pixiv_debug(getFirstPixivTagHint());
     if (!result.ok) {
       (result.logs || []).forEach((message) => pushLog(message));
-      pushLog(result.error || 'Pixiv debug snapshot failed');
-      updateStatusBadge('Status: Pixiv debug snapshot failed');
+      pushLog(result.error || 'Pixiv 调试快照抓取失败');
+      updateStatusBadge('状态: Pixiv 调试快照抓取失败');
       return;
     }
 
     (result.logs || []).forEach((message) => pushLog(message));
-    updateStatusBadge(`Status: ${result.message || 'Pixiv debug snapshot captured'}`);
+    updateStatusBadge(`状态: ${result.message || '已抓取 Pixiv 调试快照'}`);
   } catch (error) {
-    pushLog(`Pixiv debug snapshot failed: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('Status: Pixiv debug snapshot failed');
+    pushLog(`Pixiv 调试快照抓取失败: ${error && error.message ? error.message : error}`);
+    updateStatusBadge('状态: Pixiv 调试快照抓取失败');
   } finally {
     syncPixivFieldState();
   }
@@ -1127,11 +1131,11 @@ async function onCapturePixivDebug() {
 
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
-  updateStatusBadge('Status: Testing Pixiv LLM');
+  updateStatusBadge('状态: 正在测试 Pixiv LLM');
   const result = await window.pywebview.api.test_pixiv_llm({ pixiv: readPixivSettings() });
   if (!result.ok) {
-    pushLog(result.error || 'Pixiv LLM test failed');
-    updateStatusBadge('Status: Pixiv LLM test failed');
+    pushLog(result.error || 'Pixiv LLM 测试失败');
+    updateStatusBadge('状态: Pixiv LLM 测试失败');
     syncPixivFieldState();
     return;
   }
@@ -1145,7 +1149,7 @@ async function onTestPixivLlm() {
     pushLog(`[Pixiv LLM] Image tags: ${result.imageTags.join(', ')}`);
   }
   pushLog(`[Pixiv LLM] Combined tags: ${(result.tags || []).join(', ')}`);
-  updateStatusBadge(`Status: ${result.message}`);
+  updateStatusBadge(`状态: ${result.message}`);
   syncPixivFieldState();
 }
 
@@ -1316,6 +1320,7 @@ function getQuickPixivActionLabel() {
 function updatePixivModeHint() {
   const enabled = refs.pixivEnabled.checked;
   const directMode = refs.pixivUploadMode.value === 'direct';
+  const manualSubmit = refs.pixivSubmitMode.value !== 'auto';
   const llmEnabled = refs.pixivLlmEnabled.checked;
   const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
   const sexualMode = refs.pixivSexualDepiction.value || 'auto';
@@ -1331,6 +1336,9 @@ function updatePixivModeHint() {
   message += directMode
     ? ' 当前会走 Cookie + CSRF 直传模式，处理完成后会直接尝试提交到 Pixiv。'
     : ' 当前会先打开浏览器草稿页，方便你在 Pixiv 投稿页里再检查一次标题、标签和说明。';
+  if (!directMode && manualSubmit) {
+    message += ' 如果要跑批量目录，浏览器手动确认目前只支持单图；多图请改用自动投稿。';
+  }
   if (sexualMode === 'auto') {
     message += llmEnabled
       ? ' 性描写选项目前交给 LLM 自动判断，会结合当前图片内容来决定。'
@@ -1358,6 +1366,8 @@ function syncPixivFieldState() {
   const directMode = refs.pixivUploadMode.value === 'direct';
   const llmEnabled = refs.pixivLlmEnabled.checked;
   const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
+  const pixivCurrentRunning = !!state.pixivCurrent.running;
+  const pixivDraftReady = !!state.pixivCurrent.draftReady;
   const credentialSupported = state.bootstrap?.supportsCredentialStorage !== false;
   [
     refs.pixivUploadMode,
@@ -1368,10 +1378,12 @@ function syncPixivFieldState() {
     refs.pixivTagLanguage,
     refs.pixivSafetyMode,
     refs.pixivLlmEnabled,
-    refs.pixivLlmImageEnabled,
+    refs.pixivProfileDir,
+    refs.browsePixivProfileBtn,
     refs.pixivTitleTemplate,
     refs.pixivTags,
     refs.pixivCaption,
+    refs.pixivLockTags,
     refs.pixivUseMetadataTags,
     refs.pixivIncludeLoraTags,
     refs.pixivAddOriginalTag,
@@ -1380,10 +1392,10 @@ function syncPixivFieldState() {
     refs.pixivAddEngineTag,
     refs.pixivAddModelTag,
     refs.pixivAddScaleTag,
-    refs.pixivLockTags,
-  ].forEach((element) => {
-    element.disabled = !enabled;
+  ].forEach((control) => {
+    control.disabled = !enabled;
   });
+
   refs.pixivBrowser.disabled = !enabled || directMode;
   refs.pixivProfileDir.disabled = !enabled || directMode;
   refs.browsePixivProfileBtn.disabled = !enabled || directMode;
@@ -1394,18 +1406,20 @@ function syncPixivFieldState() {
   refs.pixivLlmApiKey.disabled = !enabled || !llmEnabled;
   refs.pixivRememberLlmApiKey.disabled = !enabled || !llmEnabled || !credentialSupported;
   refs.pixivRememberLlmApiKey.title = credentialSupported ? '' : 'Windows Credential Manager is not available in this environment';
+  refs.loadPixivLlmModelsBtn.disabled = !enabled || !llmEnabled;
+  refs.pixivLlmModelPreset.disabled = !enabled || !llmEnabled;
   syncPixivLlmModelState();
   refs.pixivLlmTemperature.disabled = !enabled || !llmEnabled;
   refs.pixivLlmTimeout.disabled = !enabled || !llmEnabled;
   refs.pixivLlmPromptMetadata.disabled = !enabled || !llmEnabled;
   refs.pixivLlmPromptImage.disabled = !enabled || !llmEnabled;
   refs.testPixivLlmBtn.disabled = !enabled || !llmEnabled;
-  refs.previewPixivBtn.disabled = !enabled;
-  refs.testPixivUploadBtn.disabled = !enabled;
+  refs.previewPixivBtn.disabled = !enabled || pixivCurrentRunning;
+  refs.testPixivUploadBtn.disabled = !enabled || pixivCurrentRunning;
   if (refs.quickPixivUploadBtn) {
-    refs.quickPixivUploadBtn.disabled = !enabled;
+    refs.quickPixivUploadBtn.disabled = !enabled || pixivCurrentRunning;
   }
-  refs.capturePixivDebugBtn.disabled = !enabled || directMode;
+  refs.capturePixivDebugBtn.disabled = !enabled || directMode || pixivCurrentRunning || !pixivDraftReady;
   updatePixivModeHint();
 }
 
@@ -1469,7 +1483,78 @@ function stopBatchPolling() {
   }
 }
 
+function applyPixivCurrentSnapshot(snapshot, options = {}) {
+  const safe = snapshot || {};
+  const running = !!safe.running;
+  const completed = !!safe.completed;
+  const failed = !!safe.failed;
+  const draftReady = !!safe.draftReady;
+
+  state.pixivCurrent.jobId = Number(safe.jobId || 0);
+  state.pixivCurrent.nextOffset = Number(safe.nextOffset || 0);
+  state.pixivCurrent.running = running;
+  state.pixivCurrent.completed = completed;
+  state.pixivCurrent.failed = failed;
+  state.pixivCurrent.draftReady = draftReady;
+
+  if (options.pushLogs !== false) {
+    (safe.logs || []).forEach(pushLog);
+  }
+
+  syncPixivFieldState();
+
+  if (running) {
+    updateStatusBadge(`状态: ${safe.status || '当前图片的 Pixiv 任务进行中'}`);
+    startPixivCurrentPolling();
+    return;
+  }
+
+  stopPixivCurrentPolling();
+  if (completed || state.pixivCurrent.jobId) {
+    updateStatusBadge(`状态: ${safe.status || (failed ? '当前图片的 Pixiv 流程失败' : '当前图片的 Pixiv 流程已完成')}`);
+  }
+}
+
+function startPixivCurrentPolling() {
+  if (pixivCurrentPollHandle) {
+    return;
+  }
+  pixivCurrentPollHandle = window.setInterval(() => {
+    void pollPixivCurrentStatus();
+  }, 900);
+  void pollPixivCurrentStatus();
+}
+
+function stopPixivCurrentPolling() {
+  if (pixivCurrentPollHandle) {
+    window.clearInterval(pixivCurrentPollHandle);
+    pixivCurrentPollHandle = null;
+  }
+}
+
+async function pollPixivCurrentStatus() {
+  if (!state.pixivCurrent.jobId || state.pixivCurrent.polling || !window.pywebview?.api) {
+    return;
+  }
+
+  state.pixivCurrent.polling = true;
+  try {
+    const result = await window.pywebview.api.poll_pixiv_upload_current(state.pixivCurrent.nextOffset || 0);
+    if (!result.ok) {
+      throw new Error(result.error || '轮询当前图片 Pixiv 任务失败');
+    }
+    applyPixivCurrentSnapshot(result);
+  } catch (error) {
+    stopPixivCurrentPolling();
+    pushLog(`当前图片 Pixiv 任务轮询失败: ${error && error.message ? error.message : error}`);
+    updateStatusBadge('状态: 当前图片 Pixiv 任务轮询失败');
+  } finally {
+    state.pixivCurrent.polling = false;
+  }
+}
+
 async function pollBatchStatus() {
+
   if (!state.batch.jobId || state.batch.polling || !window.pywebview?.api) {
     return;
   }

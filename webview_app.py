@@ -525,6 +525,9 @@ class WebviewBridge:
         self._batch_state = self._empty_batch_state()
         self._batch_thread: Optional[threading.Thread] = None
         self._batch_job_counter = 0
+        self._pixiv_current_state = self._empty_pixiv_current_state()
+        self._pixiv_current_thread: Optional[threading.Thread] = None
+        self._pixiv_current_job_counter = 0
         self._pixiv_llm_cache: Dict[str, List[str]] = {}
         self._pixiv_llm_decision_cache: Dict[str, Dict[str, Any]] = {}
         self._interactive_pixiv_uploader: Optional[PixivUploader] = None
@@ -584,6 +587,7 @@ class WebviewBridge:
                 "recentImages": self._recent_image_items(),
                 "recentDownloadedFonts": self._recent_downloaded_font_items(),
                 "batch": self._batch_snapshot(0),
+                "pixivCurrent": self._pixiv_current_snapshot(0),
                 "message": "准备就绪",
             }
             if self._current_image_path and self._current_image_path.exists():
@@ -856,114 +860,59 @@ class WebviewBridge:
         except Exception as exc:
             return self._error_response(exc)
 
-    def test_pixiv_upload_current(self, settings: Dict[str, Any]) -> Dict[str, Any]:
-        pixiv_uploader: Optional[PixivUploader] = None
-        keep_open = False
-        tmp_dir_handle = None
+    def start_pixiv_upload_current(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         try:
             with self._lock:
+                if self._pixiv_current_state.get("running", False):
+                    raise RuntimeError("当前图片的 Pixiv 任务仍在运行，请稍候。")
                 normalized = self._normalize_settings(settings)
                 pixiv_settings = self._normalize_pixiv_settings((settings or {}).get("pixiv", {}))
                 source_path = self._require_current_pixiv_source()
+                if not pixiv_settings.get("enabled", False):
+                    raise RuntimeError("请先启用 Pixiv 自动上传")
+                if pixiv_settings.get("upload_mode") == "direct":
+                    if not pixiv_settings.get("cookie"):
+                        raise RuntimeError("Pixiv 直传模式缺少 Cookie")
+                    if not pixiv_settings.get("csrf_token"):
+                        raise RuntimeError("Pixiv 直传模式缺少 CSRF Token")
+                self._set_interactive_pixiv_uploader(None)
                 self._config.update(normalized)
                 self._config["pixiv"] = pixiv_settings
                 self._save_config()
-
-            if not pixiv_settings.get("enabled", False):
-                raise RuntimeError("请先启用 Pixiv 自动上传")
-
-            messages: List[str] = []
-            pixiv_uploader = PixivUploader(
-                pixiv_settings,
-                log_fn=lambda message: messages.append(str(message)),
-            )
-
-            upload_mode = str(pixiv_settings.get("upload_mode") or "browser")
-            keep_open = upload_mode != "direct" and not pixiv_settings.get("auto_submit", True)
-            if upload_mode == "direct" and not pixiv_settings.get("auto_submit", True):
-                messages.append("[Pixiv] 直传模式不支持停留在投稿页，将按自动投稿执行。")
-
-            tmp_dir_handle = tempfile.TemporaryDirectory(prefix="pywebview_pixiv_single_")
-            tmp_dir = Path(tmp_dir_handle.name)
-            export_target = tmp_dir / source_path.name
-            result_path, logs = self._run_pipeline(source_path, export_target, normalized)
-            messages.extend(str(line) for line in logs)
-
-            upload_tmp_dir = tmp_dir / "upload"
-            upload_path, upload_note = self._prepare_pixiv_upload_image(result_path, upload_tmp_dir)
-            if upload_note:
-                messages.append(f"[Pixiv] {upload_note}")
-
-            upload_size = upload_path.stat().st_size
-            if upload_size > PIXIV_UPLOAD_MAX_BYTES:
-                raise RuntimeError(
-                    f"Pixiv 上传文件超过 32MB 限制：{upload_path.name} ({self._format_bytes(upload_size)})"
+                self._pixiv_current_job_counter += 1
+                job_id = self._pixiv_current_job_counter
+                self._pixiv_current_state = {
+                    "jobId": job_id,
+                    "running": True,
+                    "completed": False,
+                    "failed": False,
+                    "status": f"正在准备当前图片的 Pixiv 任务: {source_path.name}",
+                    "message": "当前图片的 Pixiv 任务已创建",
+                    "currentFile": source_path.name,
+                    "logs": ["当前图片的 Pixiv 任务已创建"],
+                }
+                self._pixiv_current_thread = threading.Thread(
+                    target=self._run_pixiv_current_job,
+                    args=(job_id, source_path, normalized, pixiv_settings),
+                    daemon=True,
                 )
-
-            tag_bundle = self._build_pixiv_tag_bundle(source_path, pixiv_settings, normalized)
-            for message in tag_bundle["infos"]:
-                messages.append(f"[Pixiv] {message}")
-            for message in tag_bundle["warnings"]:
-                messages.append(f"[Pixiv] {message}")
-            for message in tag_bundle["errors"]:
-                messages.append(f"[Pixiv] {message}")
-            if tag_bundle["safety"]["blocked"]:
-                raise RuntimeError("Pixiv 安全护栏已拦截当前图片的自动投稿")
-
-            pixiv_uploader.upload_image(
-                upload_path,
-                title=self._build_pixiv_title(result_path, pixiv_settings),
-                caption=pixiv_settings["caption"],
-                tags=tag_bundle["tags"],
-                visibility=pixiv_settings["visibility"],
-                age_restriction=tag_bundle["safety"]["effective_age"],
-                sexual_depiction=bool(tag_bundle["sexual_depiction"]["resolved"]),
-                ai_generated=pixiv_settings["ai_generated"],
-                auto_submit=pixiv_settings["auto_submit"],
-                lock_tags=pixiv_settings["lock_tags"],
-            )
-
-            if keep_open:
-                self._set_interactive_pixiv_uploader(pixiv_uploader, tmp_dir_handle)
-                tmp_dir_handle = None
-                messages.append("[Pixiv] 浏览器已停在投稿页，检查无误后可手动投稿。")
-            else:
-                pixiv_uploader.close()
-                self._set_interactive_pixiv_uploader(None)
-
-            return {
-                "ok": True,
-                "logs": messages,
-                "message": (
-                    "已完成当前图片的 Pixiv 投稿流程"
-                    if (upload_mode == "direct" or pixiv_settings.get("auto_submit", True))
-                    else "已完成当前图片的 Pixiv 草稿准备"
-                ),
-            }
+                self._pixiv_current_thread.start()
+                return self._pixiv_current_snapshot(0)
         except Exception as exc:
-            return {
-                "ok": False,
-                "error": str(exc),
-                "logs": messages if "messages" in locals() else [],
-                "traceback": traceback.format_exc(),
-            }
-        finally:
-            if pixiv_uploader is not None and not keep_open:
-                try:
-                    pixiv_uploader.close()
-                except Exception:
-                    pass
-            if tmp_dir_handle is not None:
-                try:
-                    tmp_dir_handle.cleanup()
-                except Exception:
-                    pass
+            return self._error_response(exc)
+
+    def test_pixiv_upload_current(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        return self.start_pixiv_upload_current(settings)
+
+    def poll_pixiv_upload_current(self, offset: int = 0) -> Dict[str, Any]:
+        with self._lock:
+            return self._pixiv_current_snapshot(offset)
 
     def capture_interactive_pixiv_debug(self, tag_hint: str = "") -> Dict[str, Any]:
         try:
             uploader = self._interactive_pixiv_uploader
             if uploader is None:
-                raise RuntimeError("当前没有保持打开的 Pixiv 草稿页，请先点击 Open Pixiv Draft。")
+                raise RuntimeError("当前没有保持打开的 Pixiv 草稿页，请先生成并保留当前图片的 Pixiv 草稿。")
 
             snapshot = uploader.capture_debug_snapshot(tag_hint=tag_hint)
             logs = [
@@ -983,6 +932,7 @@ class WebviewBridge:
                 "message": "已抓取当前 Pixiv 投稿页调试快照",
             }
         except Exception as exc:
+            self._set_interactive_pixiv_uploader(None)
             return self._error_response(exc)
 
     def fetch_pixiv_llm_models(self, settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -1181,11 +1131,21 @@ class WebviewBridge:
                 if not input_dir.exists() or not input_dir.is_dir():
                     raise RuntimeError("输入目录不存在")
                 output_dir.mkdir(parents=True, exist_ok=True)
+                image_count = len(
+                    [path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES]
+                )
                 if pixiv_settings["enabled"] and pixiv_settings["upload_mode"] == "direct":
                     if not pixiv_settings["cookie"]:
                         raise RuntimeError("Pixiv 直传模式缺少 Cookie")
                     if not pixiv_settings["csrf_token"]:
                         raise RuntimeError("Pixiv 直传模式缺少 CSRF Token")
+                if (
+                    pixiv_settings["enabled"]
+                    and pixiv_settings["upload_mode"] != "direct"
+                    and not pixiv_settings["auto_submit"]
+                    and image_count > 1
+                ):
+                    raise RuntimeError("批量浏览器手动确认目前只支持单图。请改为自动投稿，或先只保留 1 张图片后再开始。")
 
                 self._config.update(normalized)
                 self._config["last_input_dir"] = str(input_dir)
@@ -1562,6 +1522,149 @@ class WebviewBridge:
             "outputDir": "",
             "logs": [],
         }
+
+    def _set_pixiv_current_status(self, job_id: int, status: str, *, message: Optional[str] = None) -> None:
+        with self._lock:
+            if self._pixiv_current_state.get("jobId") != job_id:
+                return
+            self._pixiv_current_state["status"] = str(status)
+            self._pixiv_current_state["message"] = str(message or status)
+
+    def _finish_pixiv_current_job(self, job_id: int, *, message: str, failed: bool = False) -> None:
+        with self._lock:
+            if self._pixiv_current_state.get("jobId") != job_id:
+                return
+            self._pixiv_current_state["running"] = False
+            self._pixiv_current_state["completed"] = True
+            self._pixiv_current_state["failed"] = bool(failed)
+            self._pixiv_current_state["status"] = message
+            self._pixiv_current_state["message"] = message
+
+    def _pixiv_current_log(self, job_id: int, message: str) -> None:
+        with self._lock:
+            if self._pixiv_current_state.get("jobId") != job_id:
+                return
+            self._pixiv_current_state["logs"].append(str(message))
+            self._pixiv_current_state["message"] = str(message)
+
+    def _pixiv_current_snapshot(self, offset: int) -> Dict[str, Any]:
+        offset = max(0, int(offset or 0))
+        logs = list(self._pixiv_current_state.get("logs", []))
+        return {
+            "ok": True,
+            "jobId": self._pixiv_current_state.get("jobId", 0),
+            "running": bool(self._pixiv_current_state.get("running", False)),
+            "completed": bool(self._pixiv_current_state.get("completed", False)),
+            "failed": bool(self._pixiv_current_state.get("failed", False)),
+            "status": self._pixiv_current_state.get("status", "未开始"),
+            "message": self._pixiv_current_state.get("message", "未开始"),
+            "currentFile": self._pixiv_current_state.get("currentFile", ""),
+            "draftReady": self._interactive_pixiv_uploader is not None,
+            "logs": logs[offset:],
+            "nextOffset": len(logs),
+        }
+
+    def _empty_pixiv_current_state(self) -> Dict[str, Any]:
+        return {
+            "jobId": 0,
+            "running": False,
+            "completed": False,
+            "failed": False,
+            "status": "未开始",
+            "message": "未开始",
+            "currentFile": "",
+            "logs": [],
+        }
+
+    def _run_pixiv_current_job(
+        self,
+        job_id: int,
+        source_path: Path,
+        normalized: Dict[str, Any],
+        pixiv_settings: Dict[str, Any],
+    ) -> None:
+        pixiv_uploader: Optional[PixivUploader] = None
+        keep_open = False
+        tmp_dir_handle = None
+        try:
+            self._set_pixiv_current_status(job_id, f"正在处理图片: {source_path.name}")
+
+            pixiv_uploader = PixivUploader(
+                pixiv_settings,
+                log_fn=lambda message: self._pixiv_current_log(job_id, str(message)),
+            )
+
+            upload_mode = str(pixiv_settings.get("upload_mode") or "browser")
+            keep_open = upload_mode != "direct" and not pixiv_settings.get("auto_submit", True)
+            if upload_mode == "direct" and not pixiv_settings.get("auto_submit", True):
+                self._pixiv_current_log(job_id, "[Pixiv] 直传模式不支持停留在投稿页，将按自动投稿执行。")
+
+            tmp_dir_handle = tempfile.TemporaryDirectory(prefix="pywebview_pixiv_single_")
+            tmp_dir = Path(tmp_dir_handle.name)
+            export_target = tmp_dir / source_path.name
+            result_path, logs = self._run_pipeline(source_path, export_target, normalized)
+            for line in logs:
+                self._pixiv_current_log(job_id, str(line))
+
+            self._set_pixiv_current_status(job_id, f"正在整理 Pixiv 标签: {source_path.name}")
+            upload_tmp_dir = tmp_dir / "upload"
+            upload_path, upload_note = self._prepare_pixiv_upload_image(result_path, upload_tmp_dir)
+            if upload_note:
+                self._pixiv_current_log(job_id, f"[Pixiv] {upload_note}")
+
+            upload_size = upload_path.stat().st_size
+            if upload_size > PIXIV_UPLOAD_MAX_BYTES:
+                raise RuntimeError(
+                    f"Pixiv 上传文件超过 32MB 限制：{upload_path.name} ({self._format_bytes(upload_size)})"
+                )
+
+            tag_bundle = self._build_pixiv_tag_bundle(source_path, pixiv_settings, normalized)
+            for message in tag_bundle["infos"]:
+                self._pixiv_current_log(job_id, f"[Pixiv] {message}")
+            for message in tag_bundle["warnings"]:
+                self._pixiv_current_log(job_id, f"[Pixiv] {message}")
+            for message in tag_bundle["errors"]:
+                self._pixiv_current_log(job_id, f"[Pixiv] {message}")
+            if tag_bundle["safety"]["blocked"]:
+                raise RuntimeError("Pixiv 安全护栏已拦截当前图片的自动投稿")
+
+            self._set_pixiv_current_status(job_id, f"正在上传到 Pixiv: {upload_path.name}")
+            pixiv_uploader.upload_image(
+                upload_path,
+                title=self._build_pixiv_title(result_path, pixiv_settings),
+                caption=pixiv_settings["caption"],
+                tags=tag_bundle["tags"],
+                visibility=pixiv_settings["visibility"],
+                age_restriction=tag_bundle["safety"]["effective_age"],
+                sexual_depiction=bool(tag_bundle["sexual_depiction"]["resolved"]),
+                ai_generated=pixiv_settings["ai_generated"],
+                auto_submit=pixiv_settings["auto_submit"],
+                lock_tags=pixiv_settings["lock_tags"],
+            )
+
+            if keep_open:
+                self._set_interactive_pixiv_uploader(pixiv_uploader, tmp_dir_handle)
+                tmp_dir_handle = None
+                self._pixiv_current_log(job_id, "[Pixiv] 浏览器已停在投稿页，检查无误后可手动投稿。")
+                self._finish_pixiv_current_job(job_id, message="已完成当前图片的 Pixiv 草稿准备")
+            else:
+                pixiv_uploader.close()
+                self._set_interactive_pixiv_uploader(None)
+                self._finish_pixiv_current_job(job_id, message="已完成当前图片的 Pixiv 投稿流程")
+        except Exception as exc:
+            self._pixiv_current_log(job_id, f"[Pixiv] 错误: {exc}")
+            self._finish_pixiv_current_job(job_id, message=f"当前图片的 Pixiv 流程失败: {exc}", failed=True)
+        finally:
+            if pixiv_uploader is not None and not keep_open:
+                try:
+                    pixiv_uploader.close()
+                except Exception:
+                    pass
+            if tmp_dir_handle is not None:
+                try:
+                    tmp_dir_handle.cleanup()
+                except Exception:
+                    pass
 
     def _ensure_input_image(self) -> Path:
         if not self._current_image_path or not self._current_image_path.exists():
