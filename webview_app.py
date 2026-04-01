@@ -103,6 +103,10 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 PIXIV_UPLOAD_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif"}
 PIXIV_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
 PIXIV_TAG_LIMIT = 10
+WINDOW_DEFAULT_WIDTH = 1600
+WINDOW_DEFAULT_HEIGHT = 980
+WINDOW_MIN_WIDTH = 1080
+WINDOW_MIN_HEIGHT = 680
 QUALITY_BLACKLIST = {
     "masterpiece",
     "best quality",
@@ -532,6 +536,8 @@ class WebviewBridge:
         self._pixiv_llm_decision_cache: Dict[str, Dict[str, Any]] = {}
         self._interactive_pixiv_uploader: Optional[PixivUploader] = None
         self._interactive_pixiv_temp_dir = None
+        self._window_state_ready = False
+        self._window_state_restoring = False
         self._hydrate_stored_llm_api_key()
 
         if self._loaded_sensitive_config:
@@ -1712,8 +1718,8 @@ class WebviewBridge:
             "last_input_dir": "",
             "last_output_dir": "",
             "window": {
-                "width": 1600,
-                "height": 980,
+                "width": WINDOW_DEFAULT_WIDTH,
+                "height": WINDOW_DEFAULT_HEIGHT,
                 "x": None,
                 "y": None,
                 "maximized": False,
@@ -1779,6 +1785,87 @@ class WebviewBridge:
                 persisted["pixiv"][field] = ""
         CONFIG_PATH.write_text(json.dumps(persisted, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _window_state_snapshot(self) -> Dict[str, Any]:
+        state = dict(self._config.get("window", {}) or {})
+        width = state.get("width")
+        height = state.get("height")
+        x = state.get("x")
+        y = state.get("y")
+
+        try:
+            width = max(WINDOW_MIN_WIDTH, int(width))
+        except (TypeError, ValueError):
+            width = WINDOW_DEFAULT_WIDTH
+
+        try:
+            height = max(WINDOW_MIN_HEIGHT, int(height))
+        except (TypeError, ValueError):
+            height = WINDOW_DEFAULT_HEIGHT
+
+        try:
+            x = None if x is None else int(x)
+        except (TypeError, ValueError):
+            x = None
+
+        try:
+            y = None if y is None else int(y)
+        except (TypeError, ValueError):
+            y = None
+
+        return {
+            "width": width,
+            "height": height,
+            "x": x,
+            "y": y,
+            "maximized": bool(state.get("maximized", False)),
+        }
+
+    def _apply_saved_window_state(self, window=None) -> None:
+        target = window or self._window
+        if target is None:
+            self._window_state_ready = True
+            return
+
+        state = self._window_state_snapshot()
+        self._window_state_restoring = True
+        try:
+            if not state["maximized"]:
+                try:
+                    current_width = int(target.width)
+                    current_height = int(target.height)
+                except Exception:
+                    current_width = None
+                    current_height = None
+
+                if current_width != state["width"] or current_height != state["height"]:
+                    try:
+                        target.resize(state["width"], state["height"])
+                    except Exception:
+                        pass
+
+                if state["x"] is not None and state["y"] is not None:
+                    try:
+                        current_x = int(target.x)
+                        current_y = int(target.y)
+                    except Exception:
+                        current_x = None
+                        current_y = None
+
+                    if current_x != state["x"] or current_y != state["y"]:
+                        try:
+                            target.move(state["x"], state["y"])
+                        except Exception:
+                            pass
+
+            if state["maximized"]:
+                try:
+                    target.maximize()
+                except Exception:
+                    pass
+        finally:
+            self._window_state_restoring = False
+            self._window_state_ready = True
+
     def _remember_window_state(
         self,
         *,
@@ -1793,9 +1880,9 @@ class WebviewBridge:
             with self._lock:
                 state = dict(self._config.get("window", {}) or {})
                 if width is not None:
-                    state["width"] = max(960, int(width))
+                    state["width"] = max(WINDOW_MIN_WIDTH, int(width))
                 if height is not None:
-                    state["height"] = max(620, int(height))
+                    state["height"] = max(WINDOW_MIN_HEIGHT, int(height))
                 if x is not None:
                     state["x"] = int(x)
                 if y is not None:
@@ -1806,8 +1893,8 @@ class WebviewBridge:
                 if window is not None:
                     if maximized is not True:
                         try:
-                            state["width"] = max(960, int(window.width))
-                            state["height"] = max(620, int(window.height))
+                            state["width"] = max(WINDOW_MIN_WIDTH, int(window.width))
+                            state["height"] = max(WINDOW_MIN_HEIGHT, int(window.height))
                         except Exception:
                             pass
                         try:
@@ -1821,17 +1908,34 @@ class WebviewBridge:
         except Exception:
             pass
 
+    def on_window_shown(self, window=None) -> None:
+        self._apply_saved_window_state(window=window)
+
     def on_window_resized(self, width: int, height: int) -> None:
+        if not self._window_state_ready or self._window_state_restoring:
+            return
         self._remember_window_state(width=width, height=height)
 
     def on_window_moved(self, x: int, y: int) -> None:
+        if not self._window_state_ready or self._window_state_restoring:
+            return
         self._remember_window_state(x=x, y=y)
 
     def on_window_maximized(self) -> None:
+        if not self._window_state_ready or self._window_state_restoring:
+            return
         self._remember_window_state(maximized=True)
 
     def on_window_restored(self, window=None) -> None:
+        if not self._window_state_ready or self._window_state_restoring:
+            return
         self._remember_window_state(window=window, maximized=False)
+
+    def on_window_closing(self, window=None) -> None:
+        with self._lock:
+            state = dict(self._config.get("window", {}) or {})
+            is_maximized = bool(state.get("maximized", False))
+        self._remember_window_state(window=window, maximized=is_maximized)
 
     def _hydrate_stored_llm_api_key(self) -> None:
         pixiv_settings = self._config.get("pixiv", {})
@@ -3089,16 +3193,18 @@ def main():
         title="Image Workbench",
         url=str(entrypoint.resolve()),
         js_api=api,
-        width=int(window_state.get("width") or 1600),
-        height=int(window_state.get("height") or 980),
+        width=int(window_state.get("width") or WINDOW_DEFAULT_WIDTH),
+        height=int(window_state.get("height") or WINDOW_DEFAULT_HEIGHT),
         x=window_state.get("x"),
         y=window_state.get("y"),
         maximized=bool(window_state.get("maximized", False)),
-        min_size=(1080, 680),
+        min_size=(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
         background_color="#0f172a",
         text_select=False,
     )
     api._attach_window(window)
+    window.events.shown += api.on_window_shown
+    window.events.closing += api.on_window_closing
     window.events.resized += api.on_window_resized
     window.events.moved += api.on_window_moved
     window.events.maximized += api.on_window_maximized

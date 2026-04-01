@@ -131,7 +131,7 @@ body {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto minmax(360px, 1fr) minmax(260px, 36vh);
+  grid-template-rows: auto minmax(360px, 56vh) minmax(240px, 32vh);
   gap: clamp(14px, 1.2vw, 18px);
 }
 
@@ -891,6 +891,7 @@ kbd {
   padding: 18px;
   background: linear-gradient(180deg, #111a30 0%, var(--workspace) 100%);
   box-shadow: 0 24px 60px rgba(6, 12, 24, 0.32);
+  overflow: hidden;
 }
 
 .stage-head {
@@ -1123,7 +1124,7 @@ body.density-compact .sidebar {
 
 body.density-compact .workspace {
   gap: 12px;
-  grid-template-rows: auto minmax(320px, 1fr) minmax(220px, 34vh);
+  grid-template-rows: auto minmax(320px, 52vh) minmax(220px, 30vh);
 }
 
 body.density-compact .workspace-header,
@@ -1164,13 +1165,51 @@ body.density-compact .log-list {
   }
 }
 
+
+@media (min-width: 1321px) {
+  body {
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .app-shell {
+    height: 100vh;
+    overflow: hidden;
+    align-items: stretch;
+  }
+
+  .sidebar,
+  .workspace {
+    height: 100%;
+  }
+
+  .workspace {
+    grid-template-rows: auto minmax(0, 1fr) minmax(240px, 32vh);
+    overflow: hidden;
+  }
+
+  .preview-grid {
+    min-height: 0;
+    height: 100%;
+  }
+
+  .viewport {
+    min-height: 0;
+    height: 100%;
+  }
+
+  body.density-compact .workspace {
+    grid-template-rows: auto minmax(0, 1fr) minmax(220px, 30vh);
+  }
+}
+
 @media (max-width: 1320px) {
   .app-shell {
     grid-template-columns: 1fr;
   }
 
   .workspace {
-    grid-template-rows: auto minmax(320px, 1fr) minmax(240px, 34vh);
+    grid-template-rows: auto auto auto;
   }
 
   .preview-grid {
@@ -1241,7 +1280,7 @@ body.density-compact .log-list {
   }
 
   .workspace {
-    grid-template-rows: auto minmax(280px, 1fr) minmax(220px, 32vh);
+    grid-template-rows: auto auto auto;
   }
 }
 
