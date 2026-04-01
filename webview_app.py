@@ -815,6 +815,29 @@ class WebviewBridge:
         except Exception as exc:
             return self._error_response(exc)
 
+    def open_path_in_explorer(self, path: str = "") -> Dict[str, Any]:
+        try:
+            raw = str(path or "").strip()
+            if not raw:
+                raise RuntimeError("未提供可打开的路径")
+
+            candidate = Path(raw).expanduser()
+            target = candidate
+            if not target.exists():
+                parent = target.parent
+                if parent.exists():
+                    target = parent
+                else:
+                    raise RuntimeError(f"路径不存在：{candidate}")
+
+            if target.is_file():
+                target = target.parent
+
+            os.startfile(str(target))
+            return {"ok": True, "path": str(target), "message": f"已打开目录：{target}"}
+        except Exception as exc:
+            return self._error_response(exc)
+
     def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         try:
             with self._lock:
@@ -1169,6 +1192,8 @@ class WebviewBridge:
                     "currentFile": "",
                     "inputDir": str(input_dir),
                     "outputDir": str(output_dir),
+                    "lastError": "",
+                    "failedFiles": [],
                     "logs": ["批量任务已创建"],
                 }
 
@@ -1437,6 +1462,10 @@ class WebviewBridge:
                         if self._batch_state.get("jobId") != job_id:
                             return
                         self._batch_state["errors"] += 1
+                        self._batch_state["lastError"] = str(exc)
+                        failed_files = list(self._batch_state.get("failedFiles", []))
+                        failed_files.append(image_path.name)
+                        self._batch_state["failedFiles"] = failed_files[-12:]
                     self._batch_log(job_id, f"[{image_path.name}] 错误: {exc}")
                 finally:
                     with self._lock:
@@ -1501,6 +1530,8 @@ class WebviewBridge:
             "currentFile": self._batch_state.get("currentFile", ""),
             "inputDir": self._batch_state.get("inputDir", ""),
             "outputDir": self._batch_state.get("outputDir", ""),
+            "lastError": self._batch_state.get("lastError", ""),
+            "failedFiles": list(self._batch_state.get("failedFiles", [])),
             "logs": logs[offset:],
             "nextOffset": len(logs),
         }
@@ -1520,6 +1551,8 @@ class WebviewBridge:
             "currentFile": "",
             "inputDir": "",
             "outputDir": "",
+            "lastError": "",
+            "failedFiles": [],
             "logs": [],
         }
 

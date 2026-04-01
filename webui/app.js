@@ -93,6 +93,7 @@ function maybeInit() {
 async function init() {
   cacheRefs();
   bindEvents();
+  showStartupOverlay('正在同步工作台状态', '正在读取最近图片、批量状态和 Pixiv 配置。', '阶段 2 / 3：同步配置');
 
   const result = await window.pywebview.api.get_bootstrap_data();
   if (!result.ok) {
@@ -125,9 +126,11 @@ function cacheRefs() {
     'startupOverlay',
     'startupTitle',
     'startupMessage',
+    'startupProgress',
     'sidebarTabbar',
     'currentFile',
     'recentList',
+    'quickStartGuide',
     'openImageBtn',
     'wmEnabled',
     'wmText',
@@ -173,11 +176,17 @@ function cacheRefs() {
     'browseBatchInputBtn',
     'batchOutputDir',
     'browseBatchOutputBtn',
+    'openBatchInputDirBtn',
+    'openBatchOutputDirBtn',
+    'viewBatchErrorsBtn',
     'batchStatusText',
     'batchProgressLabel',
     'batchProgressFill',
     'batchCurrentFile',
     'batchSummary',
+    'batchRecoveryCard',
+    'batchLastError',
+    'batchFailedFiles',
     'pixivEnabled',
     'pixivUploadMode',
     'pixivBrowser',
@@ -548,6 +557,69 @@ function setLogFilter(filter) {
   renderLogs();
 }
 
+
+async function openPathInExplorer(path, label) {
+  if (!path) {
+    pushLog(`${label}未设置，暂时打不开。`);
+    return;
+  }
+  try {
+    const result = await window.pywebview.api.open_path_in_explorer(path);
+    if (!result.ok) {
+      throw new Error(result.error || `打开${label}失败`);
+    }
+    updateStatusBadge(`状态: ${result.message || `已打开${label}`}`);
+  } catch (error) {
+    pushLog(`打开${label}失败: ${error && error.message ? error.message : error}`);
+    updateStatusBadge(`状态: 打开${label}失败`);
+  }
+}
+
+function updateQuickStartGuide() {
+  if (!refs.quickStartGuide) {
+    return;
+  }
+  refs.quickStartGuide.classList.toggle('hidden', !!state.source);
+}
+
+function renderBatchRecovery(snapshot = {}) {
+  const safe = snapshot || {};
+  const lastError = String(safe.lastError || '').trim();
+  const failedFiles = Array.isArray(safe.failedFiles) ? safe.failedFiles : [];
+  const hasRecovery = !!lastError || failedFiles.length > 0;
+
+  if (refs.batchRecoveryCard) {
+    refs.batchRecoveryCard.classList.toggle('hidden', !hasRecovery);
+  }
+  if (refs.batchLastError) {
+    refs.batchLastError.textContent = lastError || '当前还没有批量错误。';
+  }
+  if (refs.batchFailedFiles) {
+    refs.batchFailedFiles.innerHTML = '';
+    failedFiles.forEach((name) => {
+      const item = document.createElement('span');
+      item.className = 'failed-file-chip';
+      item.textContent = String(name || '');
+      refs.batchFailedFiles.appendChild(item);
+    });
+  }
+  updateBatchRecovery();
+}
+
+function updateBatchRecovery() {
+  const hasInput = !!refs.batchInputDir?.value.trim();
+  const hasOutput = !!refs.batchOutputDir?.value.trim();
+  if (refs.openBatchInputDirBtn) {
+    refs.openBatchInputDirBtn.disabled = !hasInput;
+  }
+  if (refs.openBatchOutputDirBtn) {
+    refs.openBatchOutputDirBtn.disabled = !hasOutput;
+  }
+  if (refs.viewBatchErrorsBtn) {
+    refs.viewBatchErrorsBtn.disabled = refs.batchRecoveryCard?.classList.contains('hidden') ?? true;
+  }
+}
+
 function hydrateWatermarkFontOptions(items) {
   fillSelect(refs.wmFontPreset, [
     ...(items || []),
@@ -607,6 +679,7 @@ function hydrateForm(config) {
   renderRecentDownloadedFonts(state.bootstrap?.recentDownloadedFonts || []);
   applyBatchSnapshot(state.bootstrap?.batch || {}, { pushLogs: false });
   applyPixivCurrentSnapshot(state.bootstrap?.pixivCurrent || {}, { pushLogs: false });
+  updateBatchRecovery();
   state.ui.lastSavedSettingsSnapshot = JSON.stringify(buildSettings());
   updatePixivSaveState('配置改动会自动保存；敏感凭证不会落盘。', 'idle');
 }
@@ -1114,7 +1187,8 @@ async function onBrowseDirectory(targetRef, label) {
   const result = await window.pywebview.api.choose_directory_dialog(targetRef.value.trim());
   if (result.ok) {
     targetRef.value = result.path;
-    pushLog(`${label}：${result.path}`);
+    pushLog(`${label}?${result.path}`);
+    updateBatchRecovery();
   }
 }
 
@@ -1241,6 +1315,7 @@ async function onTestPixivLlm() {
 
 async function onStartBatch() {
   const batch = readBatchSettings();
+  setSidebarPage('publish');
   if (!batch.input_dir || !batch.output_dir) {
     pushLog('请先填写批量输入目录和输出目录');
     updateStatusBadge('状态: 批量任务缺少目录');
@@ -1254,6 +1329,7 @@ async function onStartBatch() {
   refs.batchCurrentFile.textContent = '等待后台开始处理';
   refs.batchProgressFill.style.width = '0%';
 
+  pushLog(`批量任务准备提交：${batch.input_dir} -> ${batch.output_dir}`);
   const result = await window.pywebview.api.start_batch(buildSettings());
   if (!result.ok) {
     refs.startBatchBtn.disabled = false;
@@ -1540,6 +1616,7 @@ function applyBatchSnapshot(snapshot, options = {}) {
     (safe.logs || []).forEach(pushLog);
   }
 
+  renderBatchRecovery(safe);
   updateBatchButton(running, cancelRequested);
   if (running) {
     updateStatusBadge(`状态: ${safe.status || '批量处理中'}`);
@@ -1663,6 +1740,7 @@ async function pollBatchStatus() {
 
 function updateSource(payload) {
   state.source = payload;
+  updateQuickStartGuide();
   refs.currentFile.textContent = payload.fileName;
   refs.currentFile.title = payload.path || payload.fileName;
   refs.sourceMeta.textContent = `${payload.fileName} · ${payload.width} x ${payload.height}`;
@@ -2051,12 +2129,16 @@ function updateRegionBadge() {
   refs.badgeRegionCount.textContent = `选区: ${state.regions.length}`;
 }
 
-function showStartupOverlay(title, message) {
+function showStartupOverlay(title, message, progress = '') {
   if (!refs.startupOverlay) {
     return;
   }
   refs.startupTitle.textContent = title;
   refs.startupMessage.textContent = message;
+  if (refs.startupProgress) {
+    refs.startupProgress.textContent = progress || '';
+    refs.startupProgress.classList.toggle('hidden', !progress);
+  }
   refs.startupOverlay.classList.remove('hidden');
 }
 

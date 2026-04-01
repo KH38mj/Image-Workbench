@@ -85,6 +85,13 @@ body {
   line-height: 1.7;
 }
 
+.startup-progress {
+  margin-top: 12px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
 .startup-spinner {
   width: 60px;
   height: 60px;
@@ -684,6 +691,48 @@ kbd {
   flex-shrink: 0;
 }
 
+.batch-path-actions {
+  margin-top: 12px;
+}
+
+.batch-recovery-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 245, 245, 0.92);
+  border: 1px solid rgba(209, 67, 67, 0.18);
+}
+
+.batch-recovery-card strong {
+  color: #9f2d2d;
+}
+
+.batch-recovery-card p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.failed-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.failed-file-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(209, 67, 67, 0.16);
+  color: #9f2d2d;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
 .switch-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -732,6 +781,33 @@ kbd {
 .recent-list {
   display: grid;
   gap: 10px;
+}
+
+.guide-card {
+  background: linear-gradient(180deg, rgba(234, 244, 255, 0.92), rgba(255, 255, 255, 0.94));
+}
+
+.guide-steps {
+  display: grid;
+  gap: 10px;
+}
+
+.guide-step {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(131, 160, 205, 0.16);
+}
+
+.guide-step strong {
+  color: var(--text);
+}
+
+.guide-step span {
+  color: var(--muted);
+  line-height: 1.55;
 }
 
 .recent-item {

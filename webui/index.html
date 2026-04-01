@@ -12,6 +12,7 @@
       <div class="startup-spinner" aria-hidden="true"></div>
       <strong id="startupTitle">正在连接桌面工作台</strong>
       <p id="startupMessage">第一次启动时会稍慢一点，正在等待前端和 Python 桥接就绪。</p>
+      <p class="startup-progress" id="startupProgress">阶段 1 / 3：载入界面资源</p>
     </div>
   </div>
 
@@ -42,6 +43,21 @@
             <div class="file-pill" id="currentFile">未选择图片</div>
             <p class="support-copy">支持把图片直接拖进右侧工作台，也可以从最近记录里一键恢复。</p>
             <div class="recent-list" id="recentList"></div>
+          </section>
+
+          <section class="panel compact guide-card" id="quickStartGuide">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Guide</span>
+                <h2>第一次使用</h2>
+              </div>
+            </div>
+            <div class="guide-steps">
+              <div class="guide-step"><strong>1. 先选图</strong><span>从本地选择一张图，或直接拖进右侧工作台。</span></div>
+              <div class="guide-step"><strong>2. 再调参</strong><span>在编辑页调整水印、打码、超分，先生成预览再决定导出。</span></div>
+              <div class="guide-step"><strong>3. 最后发布</strong><span>要单图 Pixiv 就用首页快捷按钮，要批量就去发布页填目录。</span></div>
+            </div>
+            <p class="support-copy">第一次不需要一口气全部配好，先跑通一张图最稳喔。</p>
           </section>
 
           <section class="panel compact">
@@ -290,6 +306,16 @@
                   <button id="browseBatchOutputBtn" class="button ghost" type="button">浏览</button>
                 </div>
               </label>
+            </div>
+            <div class="button-row batch-path-actions">
+              <button id="openBatchInputDirBtn" class="button ghost" type="button">打开输入目录</button>
+              <button id="openBatchOutputDirBtn" class="button ghost" type="button">打开输出目录</button>
+              <button id="viewBatchErrorsBtn" class="button ghost" type="button">只看错误日志</button>
+            </div>
+            <div class="batch-recovery-card hidden" id="batchRecoveryCard">
+              <strong>批量错误摘要</strong>
+              <p id="batchLastError">当前还没有批量错误。</p>
+              <div class="failed-file-list" id="batchFailedFiles"></div>
             </div>
             <div class="progress-block">
               <div class="progress-meta">
