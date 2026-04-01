@@ -131,7 +131,7 @@ body {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) minmax(320px, 42vh);
+  grid-template-rows: auto minmax(360px, 1fr) minmax(260px, 36vh);
   gap: clamp(14px, 1.2vw, 18px);
 }
 
@@ -234,7 +234,8 @@ body {
   display: none;
   height: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 4px;
 }
 
@@ -875,16 +876,18 @@ kbd {
 }
 
 .preview-grid {
-  min-height: 0;
+  min-height: 360px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+  align-items: stretch;
 }
 
 .stage-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 14px;
+  min-height: 0;
   padding: 18px;
   background: linear-gradient(180deg, #111a30 0%, var(--workspace) 100%);
   box-shadow: 0 24px 60px rgba(6, 12, 24, 0.32);
@@ -895,6 +898,7 @@ kbd {
   justify-content: space-between;
   gap: 16px;
   align-items: center;
+  flex-wrap: wrap;
   color: #eff6ff;
 }
 
@@ -907,9 +911,17 @@ kbd {
   color: #f8fbff;
 }
 
+.stage-caption {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .viewport {
   position: relative;
-  min-height: 0;
+  min-height: 300px;
   border-radius: calc(var(--radius-xl) - 6px);
   overflow: hidden;
   background:
@@ -1111,7 +1123,7 @@ body.density-compact .sidebar {
 
 body.density-compact .workspace {
   gap: 12px;
-  grid-template-rows: auto minmax(0, 1fr) minmax(220px, 36vh);
+  grid-template-rows: auto minmax(320px, 1fr) minmax(220px, 34vh);
 }
 
 body.density-compact .workspace-header,
@@ -1158,7 +1170,7 @@ body.density-compact .log-list {
   }
 
   .workspace {
-    grid-template-rows: auto minmax(0, 1fr) minmax(260px, 36vh);
+    grid-template-rows: auto minmax(320px, 1fr) minmax(240px, 34vh);
   }
 
   .preview-grid {
@@ -1229,7 +1241,7 @@ body.density-compact .log-list {
   }
 
   .workspace {
-    grid-template-rows: auto minmax(0, 1fr) minmax(220px, 34vh);
+    grid-template-rows: auto minmax(280px, 1fr) minmax(220px, 32vh);
   }
 }
 
