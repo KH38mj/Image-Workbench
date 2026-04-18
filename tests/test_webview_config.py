@@ -77,6 +77,27 @@ class WebviewConfigRegressionTests(unittest.TestCase):
             self.assertEqual(rewritten["pixiv"]["csrf_token"], "")
             self.assertEqual(rewritten["pixiv"]["llm_api_key"], "")
 
+    def test_resolve_batch_image_files_keeps_retry_order_and_reports_missing_names(self):
+        webview_app = _load_webview_app()
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            input_dir = Path(temp_dir_name)
+            for name in ("b.png", "a.jpg", "ignore.txt"):
+                path = input_dir / name
+                if path.suffix.lower() in {".png", ".jpg"}:
+                    path.write_bytes(b"image")
+                else:
+                    path.write_text("skip", encoding="utf-8")
+
+            bridge = webview_app.WebviewBridge()
+            matched, missing = bridge._resolve_batch_image_files(
+                input_dir,
+                ["a.jpg", "missing.png", "b.png", "a.jpg"],
+            )
+
+            self.assertEqual([item.name for item in matched], ["a.jpg", "b.png"])
+            self.assertEqual(missing, ["missing.png"])
+
 
 if __name__ == "__main__":
     unittest.main()

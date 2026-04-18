@@ -1,4 +1,4 @@
-const state = {
+﻿const state = {
   bootstrap: null,
   source: null,
   preview: null,
@@ -11,6 +11,16 @@ const state = {
     jobId: 0,
     nextOffset: 0,
     polling: false,
+    running: false,
+    completed: false,
+    cancelRequested: false,
+    retryMode: false,
+    status: '',
+    currentFile: '',
+    inputDir: '',
+    outputDir: '',
+    lastError: '',
+    failedFiles: [],
   },
   pixivCurrent: {
     jobId: 0,
@@ -20,6 +30,9 @@ const state = {
     completed: false,
     failed: false,
     draftReady: false,
+    status: '',
+    message: '',
+    currentFile: '',
   },
   ui: {
     sidebarPage: 'file',
@@ -31,7 +44,11 @@ const state = {
     recentDownloadedFonts: [],
     fontHighlightTimer: null,
     pixivLlmModels: [],
+    pixivSessionCookie: '',
+    pixivSessionCsrfToken: '',
+    pixivCanTestDirect: false,
     lastSavedSettingsSnapshot: '',
+    lastExportedPath: '',
     logs: [],
   },
 };
@@ -43,18 +60,54 @@ let batchPollHandle = null;
 let pixivCurrentPollHandle = null;
 let settingsSaveHandle = null;
 const PIXIV_AUTOSAVE_DELAY = 500;
-const DEFAULT_WATERMARK_SAMPLE = 'YourName · 水印预览 2026';
+const DEFAULT_WATERMARK_SAMPLE = 'YourName 路 水印预览 2026';
+const WIDE_LAYOUT_MIN_DEVICE_PX = 1360;
+const PIXIV_TITLE_STYLE_OPTIONS = [
+  { value: 'default', label: '默认' },
+  { value: 'minimal', label: '简洁' },
+  { value: 'dreamy', label: '梦幻' },
+  { value: 'light_novel', label: '日系轻小说' },
+  { value: 'character_focus', label: '角色中心' },
+  { value: 'custom', label: '自定义' },
+];
+const PIXIV_TITLE_STYLE_PROMPTS = {
+  default: '',
+  minimal: 'Keep the title concise, clean, and elegant. Prefer 6-16 characters when possible. Avoid ornate wording.',
+  dreamy: 'Polish the title into a soft, dreamy, delicate style suitable for atmospheric fantasy illustrations.',
+  light_novel: 'Polish the title into a light-novel-like Japanese illustration title. Keep it catchy but not overly long.',
+  character_focus: 'Make the title focus on the character impression, mood, and visual identity. Keep it natural and searchable for Pixiv.',
+  custom: '',
+};
 
 window.addEventListener('pywebviewready', maybeInit);
 window.addEventListener('DOMContentLoaded', maybeInit);
-window.addEventListener('resize', () => renderRegions());
+window.addEventListener('resize', () => {
+  updateViewportLayoutMode();
+  renderRegions();
+});
 
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
   window.setTimeout(maybeInit, 0);
 }
 
+function updateViewportLayoutMode() {
+  if (!document.body) {
+    return;
+  }
+  const cssWidth = Math.max(
+    window.innerWidth || 0,
+    document.documentElement?.clientWidth || 0,
+  );
+  const deviceScale = window.devicePixelRatio || 1;
+  const effectiveWidth = cssWidth * deviceScale;
+  const wide = effectiveWidth >= WIDE_LAYOUT_MIN_DEVICE_PX;
+  document.body.classList.toggle('layout-wide', wide);
+  document.body.classList.toggle('layout-narrow', !wide);
+}
+
 function maybeInit() {
   cacheRefs();
+  updateViewportLayoutMode();
   showStartupOverlay(
     '正在连接桌面工作台',
     '第一次启动时会稍慢一点，正在等待前端和 Python 桥接就绪。',
@@ -131,6 +184,12 @@ function cacheRefs() {
     'currentFile',
     'recentList',
     'quickStartGuide',
+    'quickGuideTitle',
+    'quickGuideLead',
+    'quickGuideSteps',
+    'quickGuidePrimaryBtn',
+    'quickGuideSecondaryBtn',
+    'quickGuideHint',
     'openImageBtn',
     'wmEnabled',
     'wmText',
@@ -179,6 +238,8 @@ function cacheRefs() {
     'openBatchInputDirBtn',
     'openBatchOutputDirBtn',
     'viewBatchErrorsBtn',
+    'batchActionHint',
+    'retryFailedBatchBtn',
     'batchStatusText',
     'batchProgressLabel',
     'batchProgressFill',
@@ -200,8 +261,14 @@ function cacheRefs() {
     'browsePixivProfileBtn',
     'pixivCookie',
     'pixivCsrfToken',
+    'importPixivAuthBtn',
+    'testPixivDirectBtn',
+    'pixivDirectStatus',
     'pixivLlmEnabled',
     'pixivLlmImageEnabled',
+    'pixivLlmTitleEnabled',
+    'pixivLlmTitleStyle',
+    'resetPixivTitlePromptBtn',
     'pixivLlmBaseUrl',
     'pixivLlmApiKey',
     'pixivRememberLlmApiKey',
@@ -216,6 +283,7 @@ function cacheRefs() {
     'pixivLlmTimeout',
     'pixivLlmPromptMetadata',
     'pixivLlmPromptImage',
+    'pixivLlmPromptTitle',
     'pixivTitleTemplate',
     'pixivTags',
     'pixivCaption',
@@ -234,6 +302,7 @@ function cacheRefs() {
     'renderPreviewBtn',
     'exportBtn',
     'quickPixivUploadBtn',
+    'quickActionHint',
     'badgeSourceSize',
     'badgePreviewSize',
     'badgeRegionCount',
@@ -265,43 +334,79 @@ function cacheRefs() {
 }
 
 function bindEvents() {
-  refs.openImageBtn.addEventListener('click', onOpenImage);
-  refs.browseFontBtn.addEventListener('click', onBrowseFont);
-  refs.browseModelBtn.addEventListener('click', onBrowseModel);
-  refs.browseBatchInputBtn.addEventListener('click', () => {
-    void onBrowseDirectory(refs.batchInputDir, '已选择批量输入目录');
+  const on = (element, eventName, handler) => {
+    element?.addEventListener(eventName, handler);
+  };
+
+  on(refs.openImageBtn, 'click', onOpenImage);
+  on(refs.quickGuidePrimaryBtn, 'click', onQuickGuideAction);
+  on(refs.quickGuideSecondaryBtn, 'click', onQuickGuideAction);
+  on(refs.browseFontBtn, 'click', onBrowseFont);
+  on(refs.browseModelBtn, 'click', onBrowseModel);
+  on(refs.browseBatchInputBtn, 'click', () => {
+    void onBrowseDirectory(refs.batchInputDir, '宸查€夋嫨鎵归噺杈撳叆鐩綍');
   });
-  refs.browseBatchOutputBtn.addEventListener('click', () => {
-    void onBrowseDirectory(refs.batchOutputDir, '已选择批量输出目录');
+  on(refs.browseBatchOutputBtn, 'click', () => {
+    void onBrowseDirectory(refs.batchOutputDir, '宸查€夋嫨鎵归噺杈撳嚭鐩綍');
   });
-  refs.browsePixivProfileBtn.addEventListener('click', () => {
-    void onBrowseDirectory(refs.pixivProfileDir, '已选择 Pixiv 资料目录');
+  on(refs.browsePixivProfileBtn, 'click', () => {
+    void onBrowseDirectory(refs.pixivProfileDir, '宸查€夋嫨 Pixiv 资料目录');
   });
-  refs.pixivUploadMode.addEventListener('change', syncPixivFieldState);
-  refs.pixivSubmitMode.addEventListener('change', updatePixivModeHint);
-  refs.pixivSexualDepiction.addEventListener('change', updatePixivModeHint);
-  refs.pixivSafetyMode.addEventListener('change', updatePixivModeHint);
-  refs.pixivLlmEnabled.addEventListener('change', syncPixivFieldState);
-  refs.pixivLlmImageEnabled.addEventListener('change', updatePixivModeHint);
-  refs.pixivLlmModelPreset.addEventListener('change', syncPixivLlmModelState);
-  refs.loadPixivLlmModelsBtn.addEventListener('click', onLoadPixivLlmModels);
-  refs.testPixivLlmBtn.addEventListener('click', onTestPixivLlm);
-  refs.previewPixivBtn.addEventListener('click', onPreviewPixivSubmission);
-  refs.testPixivUploadBtn.addEventListener('click', onTestPixivUploadCurrent);
-  refs.capturePixivDebugBtn.addEventListener('click', onCapturePixivDebug);
-  refs.startBatchBtn.addEventListener('click', onStartBatch);
-  refs.stopBatchBtn.addEventListener('click', onStopBatch);
-  refs.renderPreviewBtn.addEventListener('click', onRenderPreview);
-  refs.quickPixivUploadBtn.addEventListener('click', onTestPixivUploadCurrent);
-  refs.exportBtn.addEventListener('click', onExport);
-  refs.resetPreviewBtn.addEventListener('click', onResetPreview);
-  refs.undoRegionBtn.addEventListener('click', undoLastRegion);
-  refs.clearRegionsBtn.addEventListener('click', clearRegions);
-  refs.copyLogBtn.addEventListener('click', onCopyLogs);
-  refs.exportLogBtn.addEventListener('click', onExportLogs);
-  refs.clearLogBtn.addEventListener('click', () => {
+  [refs.batchInputDir, refs.batchOutputDir].forEach((control) => {
+    control?.addEventListener('input', updateBatchRecovery);
+    control?.addEventListener('change', updateBatchRecovery);
+  });
+  on(refs.pixivUploadMode, 'change', syncPixivFieldState);
+  on(refs.pixivSubmitMode, 'change', updatePixivModeHint);
+  on(refs.pixivSexualDepiction, 'change', updatePixivModeHint);
+  on(refs.pixivSafetyMode, 'change', updatePixivModeHint);
+  on(refs.pixivLlmEnabled, 'change', syncPixivFieldState);
+  on(refs.pixivLlmImageEnabled, 'change', updatePixivModeHint);
+  on(refs.pixivLlmTitleEnabled, 'change', updatePixivModeHint);
+  on(refs.pixivLlmTitleStyle, 'change', () => {
+    syncPixivTitlePromptPresetState();
+    syncPixivTitleStyleFromPrompt();
+    scheduleSettingsSave();
+    refreshExperienceUi();
+  });
+  on(refs.pixivLlmPromptTitle, 'input', () => {
+    syncPixivTitleStyleFromPrompt();
+  });
+  on(refs.resetPixivTitlePromptBtn, 'click', resetPixivTitlePromptToPreset);
+  on(refs.pixivLlmModelPreset, 'change', syncPixivLlmModelState);
+  on(refs.loadPixivLlmModelsBtn, 'click', onLoadPixivLlmModels);
+  on(refs.testPixivLlmBtn, 'click', onTestPixivLlm);
+  on(refs.previewPixivBtn, 'click', onPreviewPixivSubmission);
+  on(refs.testPixivUploadBtn, 'click', onTestPixivUploadCurrent);
+  on(refs.capturePixivDebugBtn, 'click', onCapturePixivDebug);
+  on(refs.importPixivAuthBtn, 'click', onImportPixivBrowserAuth);
+  on(refs.testPixivDirectBtn, 'click', onTestPixivDirect);
+  on(refs.startBatchBtn, 'click', () => {
+    void onStartBatch();
+  });
+  on(refs.stopBatchBtn, 'click', () => {
+    void onStopBatch();
+  });
+  on(refs.retryFailedBatchBtn, 'click', () => {
+    void onRetryFailedBatch();
+  });
+  on(refs.renderPreviewBtn, 'click', () => {
+    void onRenderPreview();
+  });
+  on(refs.quickPixivUploadBtn, 'click', () => {
+    void onTestPixivUploadCurrent();
+  });
+  on(refs.exportBtn, 'click', onExport);
+  on(refs.resetPreviewBtn, 'click', onResetPreview);
+  on(refs.undoRegionBtn, 'click', undoLastRegion);
+  on(refs.clearRegionsBtn, 'click', clearRegions);
+  on(refs.copyLogBtn, 'click', onCopyLogs);
+  on(refs.exportLogBtn, 'click', onExportLogs);
+  on(refs.clearLogBtn, 'click', () => {
     state.ui.logs = [];
-    refs.logList.innerHTML = '';
+    if (refs.logList) {
+      refs.logList.innerHTML = '';
+    }
     updateStatusBadge('状态: 日志已清空');
   });
   document.querySelectorAll('.sidebar-tab').forEach((button) => {
@@ -309,7 +414,7 @@ function bindEvents() {
       setSidebarPage(button.dataset.page || 'file');
     });
   });
-  refs.compactModeBtn?.addEventListener('click', toggleCompactMode);
+  on(refs.compactModeBtn, 'click', toggleCompactMode);
   document.querySelectorAll('[data-log-filter]').forEach((button) => {
     button.addEventListener('click', () => {
       setLogFilter(button.dataset.logFilter || 'all');
@@ -320,24 +425,27 @@ function bindEvents() {
       saveFoldState(details.id, details.open);
     });
   });
-  refs.wmFontPreset.addEventListener('change', onWatermarkFontPresetChange);
-  refs.wmFontPath.addEventListener('input', updateWatermarkFontPreview);
-  refs.wmFontPath.addEventListener('change', syncWatermarkFontState);
-  refs.wmText.addEventListener('input', updateWatermarkSampleText);
-  refs.wmSampleMode.addEventListener('change', updateWatermarkSampleText);
-  refs.loadOnlineFontsBtn.addEventListener('click', onLoadOnlineFonts);
+  on(refs.wmFontPreset, 'change', onWatermarkFontPresetChange);
+  on(refs.wmFontPath, 'input', updateWatermarkFontPreview);
+  on(refs.wmFontPath, 'change', syncWatermarkFontState);
+  on(refs.wmText, 'input', updateWatermarkSampleText);
+  on(refs.wmSampleMode, 'change', updateWatermarkSampleText);
+  on(refs.loadOnlineFontsBtn, 'click', onLoadOnlineFonts);
   bindSettingsAutosave();
-  refs.downloadOnlineFontBtn.addEventListener('click', onDownloadOnlineFont);
+  on(refs.downloadOnlineFontBtn, 'click', onDownloadOnlineFont);
   document.querySelectorAll('[data-font-query]').forEach((button) => {
     button.addEventListener('click', () => {
       refs.fontCatalogQuery.value = button.dataset.fontQuery || '';
       void onLoadOnlineFonts();
     });
   });
-  refs.upscaleEngine.addEventListener('change', onEngineChange);
-  refs.mosaicMode.addEventListener('change', updateMosaicFieldState);
-  refs.pixivEnabled.addEventListener('change', syncPixivFieldState);
-  refs.sourceStage.addEventListener('mousedown', onSourceMouseDown);
+  on(refs.upscaleEngine, 'change', onEngineChange);
+  on(refs.mosaicMode, 'change', updateMosaicFieldState);
+  on(refs.pixivEnabled, 'change', syncPixivFieldState);
+  [refs.wmEnabled, refs.mosaicEnabled, refs.upscaleEnabled].forEach((control) => {
+    control?.addEventListener('change', refreshExperienceUi);
+  });
+  on(refs.sourceStage, 'mousedown', onSourceMouseDown);
   window.addEventListener('mousemove', onSourceMouseMove);
   window.addEventListener('mouseup', onSourceMouseUp);
   window.addEventListener('keydown', onWorkspaceKeyDown);
@@ -347,10 +455,10 @@ function bindEvents() {
   });
 
   [refs.sourceViewport, refs.resultViewport].forEach((element) => {
-    element.addEventListener('dragenter', onWorkspaceDragEnter);
-    element.addEventListener('dragover', onWorkspaceDragOver);
-    element.addEventListener('dragleave', onWorkspaceDragLeave);
-    element.addEventListener('drop', onWorkspaceDrop);
+    on(element, 'dragenter', onWorkspaceDragEnter);
+    on(element, 'dragover', onWorkspaceDragOver);
+    on(element, 'dragleave', onWorkspaceDragLeave);
+    on(element, 'drop', onWorkspaceDrop);
   });
 }
 
@@ -370,6 +478,8 @@ function bindSettingsAutosave() {
     refs.pixivCsrfToken,
     refs.pixivLlmEnabled,
     refs.pixivLlmImageEnabled,
+    refs.pixivLlmTitleEnabled,
+    refs.pixivLlmTitleStyle,
     refs.pixivLlmBaseUrl,
     refs.pixivLlmApiKey,
     refs.pixivRememberLlmApiKey,
@@ -379,6 +489,7 @@ function bindSettingsAutosave() {
     refs.pixivLlmTimeout,
     refs.pixivLlmPromptMetadata,
     refs.pixivLlmPromptImage,
+    refs.pixivLlmPromptTitle,
     refs.pixivTitleTemplate,
     refs.pixivTags,
     refs.pixivCaption,
@@ -397,10 +508,12 @@ function bindSettingsAutosave() {
 
   controls.forEach((control) => {
     control.addEventListener('change', scheduleSettingsSave);
+    control.addEventListener('change', refreshExperienceUi);
     if (control.tagName === 'INPUT' || control.tagName === 'TEXTAREA') {
       const type = String(control.type || '').toLowerCase();
       if (!['checkbox', 'radio', 'range', 'file', 'button', 'submit'].includes(type)) {
         control.addEventListener('input', scheduleSettingsSave);
+        control.addEventListener('input', refreshExperienceUi);
       }
     }
   });
@@ -412,6 +525,14 @@ function updatePixivSaveState(message, kind = 'idle') {
   }
   refs.pixivSaveState.textContent = message;
   refs.pixivSaveState.dataset.state = kind;
+}
+
+function updatePixivDirectStatus(message, kind = 'idle') {
+  if (!refs.pixivDirectStatus) {
+    return;
+  }
+  refs.pixivDirectStatus.textContent = message;
+  refs.pixivDirectStatus.dataset.state = kind;
 }
 
 function scheduleSettingsSave() {
@@ -435,7 +556,7 @@ async function persistSettingsSilently() {
   const payload = buildSettings();
   const snapshot = JSON.stringify(payload);
   if (snapshot === state.ui.lastSavedSettingsSnapshot) {
-    updatePixivSaveState('配置已是最新状态', 'saved');
+    updatePixivSaveState('配置已经是最新状态', 'saved');
     return;
   }
   updatePixivSaveState('等待自动保存…', 'pending');
@@ -564,7 +685,7 @@ async function openPathInExplorer(path, label) {
     return;
   }
   try {
-    const result = await window.pywebview.api.open_path_in_explorer(path);
+      throw new Error(result.error || `打开${label}失败`);
     if (!result.ok) {
       throw new Error(result.error || `打开${label}失败`);
     }
@@ -575,11 +696,347 @@ async function openPathInExplorer(path, label) {
   }
 }
 
+function hasProcessedPreview() {
+  if (!state.source || !state.preview) {
+    return false;
+  }
+  return state.preview.path !== state.source.path || state.preview.label !== '\u6e90\u56fe';
+}
+
+function getProcessingSummary() {
+  const summary = [];
+  if (refs.upscaleEnabled?.checked) {
+    summary.push('\u8d85\u5206');
+  }
+  if (refs.mosaicEnabled?.checked) {
+    summary.push(
+      state.regions.length
+        ? `\u6253\u7801 ${state.regions.length} \u533a`
+        : '\u6253\u7801\uff08\u5f85\u6846\u9009\uff09',
+    );
+  }
+  if (refs.wmEnabled?.checked) {
+    summary.push('\u6c34\u5370');
+  }
+  return summary;
+}
+
+function hasAnyBatchStep() {
+  return !!(
+    refs.upscaleEnabled?.checked
+    || refs.wmEnabled?.checked
+    || (refs.mosaicEnabled?.checked && state.regions.length)
+  );
+}
+
+function getCurrentPixivPreflight() {
+  const pixiv = readPixivSettings();
+  const issues = [];
+
+  if (!state.source) {
+    issues.push('\u8bf7\u5148\u9009\u62e9\u56fe\u7247');
+  }
+  if (!pixiv.enabled) {
+    issues.push('\u5148\u5728\u53d1\u5e03\u9875\u542f\u7528 Pixiv \u81ea\u52a8\u4e0a\u4f20');
+  }
+  if (state.pixivCurrent.running) {
+    issues.push('\u5f53\u524d\u56fe\u7247\u7684 Pixiv \u4efb\u52a1\u8fd8\u5728\u8fdb\u884c\u4e2d');
+  }
+  if (pixiv.enabled && pixiv.upload_mode === 'direct') {
+    if (!pixiv.cookie.trim()) {
+      issues.push('Pixiv \u76f4\u4f20\u6a21\u5f0f\u7f3a\u5c11 Cookie');
+    }
+    if (!pixiv.csrf_token.trim()) {
+      issues.push('Pixiv \u76f4\u4f20\u6a21\u5f0f\u7f3a\u5c11 CSRF Token');
+    }
+  }
+
+  return { pixiv, issues };
+}
+
+function getBatchPreflight(options = {}) {
+  const retryFailedOnly = !!options.retryFailedOnly;
+  const batch = readBatchSettings();
+  const pixiv = readPixivSettings();
+  const failedFiles = Array.isArray(state.batch.failedFiles) ? state.batch.failedFiles : [];
+  const issues = [];
+  const warnings = [];
+
+  if (!batch.input_dir) {
+    issues.push('\u8fd8\u6ca1\u9009\u6279\u91cf\u8f93\u5165\u76ee\u5f55');
+  }
+  if (!batch.output_dir) {
+    issues.push('\u8fd8\u6ca1\u9009\u6279\u91cf\u8f93\u51fa\u76ee\u5f55');
+  }
+  if (!hasAnyBatchStep()) {
+    issues.push('\u81f3\u5c11\u542f\u7528\u4e00\u4e2a\u5904\u7406\u6b65\u9aa4\uff1b\u6253\u7801\u8fd8\u9700\u8981\u5148\u6846\u9009\u533a\u57df');
+  }
+  if (pixiv.enabled && pixiv.upload_mode === 'direct') {
+    if (!pixiv.cookie.trim()) {
+      issues.push('Pixiv \u76f4\u4f20\u6a21\u5f0f\u7f3a\u5c11 Cookie');
+    }
+    if (!pixiv.csrf_token.trim()) {
+      issues.push('Pixiv \u76f4\u4f20\u6a21\u5f0f\u7f3a\u5c11 CSRF Token');
+    }
+  }
+  if (pixiv.enabled && pixiv.upload_mode !== 'direct' && !pixiv.auto_submit) {
+    warnings.push('\u6279\u91cf\u6d4f\u89c8\u5668\u624b\u52a8\u786e\u8ba4\u76ee\u524d\u53ea\u652f\u6301\u5355\u56fe\uff0c\u591a\u56fe\u4f1a\u88ab\u540e\u7aef\u62e6\u4e0b');
+  }
+  if (retryFailedOnly && !failedFiles.length) {
+    issues.push('\u5f53\u524d\u6ca1\u6709\u53ef\u91cd\u8dd1\u7684\u5931\u8d25\u9879');
+  }
+
+  return { batch, pixiv, failedFiles, issues, warnings };
+}
+
+function setButtonAvailability(button, enabled, reason = '') {
+  if (!button) {
+    return;
+  }
+  button.disabled = !enabled;
+  button.title = enabled ? '' : reason;
+}
+
+function configureGuideButton(button, config) {
+  if (!button) {
+    return;
+  }
+  if (!config) {
+    button.classList.add('hidden');
+    button.dataset.action = '';
+    button.textContent = '';
+    button.disabled = true;
+    button.title = '';
+    return;
+  }
+  button.classList.remove('hidden');
+  button.dataset.action = config.action || '';
+  button.textContent = config.label || '';
+  setButtonAvailability(button, config.enabled !== false, config.reason || '');
+}
+
+function renderGuideSteps(items) {
+  if (!refs.quickGuideSteps) {
+    return;
+  }
+  refs.quickGuideSteps.innerHTML = '';
+  (items || []).forEach((item) => {
+    const card = document.createElement('div');
+    card.className = `guide-step${item.done ? ' is-done' : ''}`;
+
+    const title = document.createElement('strong');
+    title.textContent = item.title || '';
+    card.appendChild(title);
+
+    const detail = document.createElement('span');
+    detail.textContent = item.detail || '';
+    card.appendChild(detail);
+
+    refs.quickGuideSteps.appendChild(card);
+  });
+}
+
+async function onQuickGuideAction(event) {
+  const action = String(event?.currentTarget?.dataset?.action || '').trim();
+  if (!action) {
+    return;
+  }
+
+  switch (action) {
+    case 'open-image':
+      await onOpenImage();
+      break;
+    case 'go-edit':
+      setSidebarPage('edit');
+      break;
+    case 'go-publish':
+      setSidebarPage('publish');
+      break;
+    case 'render-preview':
+      await onRenderPreview();
+      break;
+    case 'export':
+      await onExport();
+      break;
+    case 'current-pixiv':
+      await onTestPixivUploadCurrent();
+      break;
+    case 'capture-pixiv-debug':
+      await onCapturePixivDebug();
+      break;
+    case 'open-exported':
+      await openPathInExplorer(state.ui.lastExportedPath, '\u5bfc\u51fa\u7ed3\u679c');
+      break;
+    default:
+      break;
+  }
+}
+
 function updateQuickStartGuide() {
   if (!refs.quickStartGuide) {
     return;
   }
-  refs.quickStartGuide.classList.toggle('hidden', !!state.source);
+
+  const sourceReady = !!state.source;
+  const processedPreview = hasProcessedPreview();
+  const processingSummary = getProcessingSummary();
+  const pixivState = getCurrentPixivPreflight();
+  const pixivReady = pixivState.issues.length === 0;
+  let title = '';
+  let lead = '';
+  let hint = '';
+  let steps = [];
+  let primary = null;
+  let secondary = null;
+
+  refs.quickStartGuide.classList.remove('hidden');
+
+  if (!sourceReady) {
+    title = '\u5148\u9009\u4e00\u5f20\u56fe';
+    lead = '\u4ece\u672c\u5730\u9009\u62e9\u4e00\u5f20\u56fe\uff0c\u6216\u76f4\u63a5\u62d6\u8fdb\u53f3\u4fa7\u5de5\u4f5c\u53f0\u3002';
+    hint = '\u7b2c\u4e00\u6b21\u4e0d\u9700\u8981\u4e00\u53e3\u6c14\u5168\u90e8\u914d\u597d\uff0c\u5148\u8dd1\u901a\u4e00\u5f20\u56fe\u6700\u7a33\u3002';
+    steps = [
+      { title: '1. \u5148\u9009\u56fe', detail: '\u53f3\u4fa7\u5de5\u4f5c\u533a\u652f\u6301\u76f4\u63a5\u62d6\u5165\uff0c\u4e5f\u53ef\u4ee5\u4ece\u6700\u8fd1\u8bb0\u5f55\u6062\u590d\u3002', done: false },
+      { title: '2. \u518d\u8c03\u53c2', detail: '\u53bb\u7f16\u8f91\u9875\u6253\u5f00\u6c34\u5370\u3001\u6253\u7801\u6216\u8d85\u5206\uff0c\u4e0d\u7528\u4e00\u6b21\u6027\u5168\u5f00\u3002', done: false },
+      { title: '3. \u770b\u9884\u89c8\u518d\u51b3\u5b9a', detail: '\u5148\u770b\u4e00\u773c\u9884\u89c8\uff0c\u518d\u9009\u62e9\u5bfc\u51fa\u6216 Pixiv \u6d41\u7a0b\u3002', done: false },
+    ];
+    primary = { label: '\u9009\u62e9\u56fe\u7247', action: 'open-image' };
+  } else if (state.pixivCurrent.running) {
+    title = '\u5355\u56fe Pixiv \u4efb\u52a1\u8fdb\u884c\u4e2d';
+    lead = state.pixivCurrent.status || '\u540e\u53f0\u6b63\u5728\u5904\u7406\u5f53\u524d\u56fe\u7247\u3002';
+    hint = '\u65e5\u5fd7\u4f1a\u6301\u7eed\u66f4\u65b0\uff0c\u4e0d\u7528\u53cd\u590d\u70b9\u6309\u94ae\u50ac\u5b83\u3002';
+    steps = [
+      { title: '\u5f53\u524d\u56fe\u7247\u5df2\u9501\u5b9a', detail: state.source.fileName || '', done: true },
+      { title: '\u540e\u53f0\u6b63\u5728\u6267\u884c', detail: state.pixivCurrent.status || '\u6b63\u5728\u5904\u7406\u4e2d', done: false },
+      { title: '\u7b49\u5b83\u505c\u5728\u8349\u7a3f\u9875\u6216\u81ea\u52a8\u6295\u7a3f\u5b8c\u6210', detail: '\u5982\u679c\u662f\u624b\u52a8\u6a21\u5f0f\uff0c\u7b49\u6d4f\u89c8\u5668\u505c\u4e0b\u6765\u518d\u53bb\u68c0\u67e5\u5373\u53ef\u3002', done: false },
+    ];
+    secondary = { label: '\u53bb\u53d1\u5e03\u9875', action: 'go-publish' };
+  } else if (state.pixivCurrent.failed) {
+    title = '\u5355\u56fe Pixiv \u6d41\u7a0b\u6ca1\u8dd1\u901a';
+    lead = state.pixivCurrent.status || '\u8fd9\u6b21 Pixiv \u4efb\u52a1\u6ca1\u6709\u5b8c\u6210\u3002';
+    hint = '\u5148\u56de\u53d1\u5e03\u9875\u68c0\u67e5 Pixiv \u8bbe\u7f6e\uff0c\u4fee\u5b8c\u518d\u8bd5\u4f1a\u66f4\u7a33\u3002';
+    steps = [
+      { title: '\u5f53\u524d\u56fe\u7247\u8fd8\u5728', detail: state.source.fileName || '', done: true },
+      { title: '\u672c\u6b21\u62a5\u9519', detail: state.pixivCurrent.status || '\u8bf7\u67e5\u770b\u65e5\u5fd7', done: false },
+      { title: '\u4e0b\u4e00\u6b65', detail: '\u8c03\u6574 Pixiv \u8bbe\u7f6e\u540e\u518d\u91cd\u8bd5\u3002', done: false },
+    ];
+    primary = { label: '\u53bb\u53d1\u5e03\u9875', action: 'go-publish' };
+    if (pixivState.pixiv.enabled) {
+      secondary = { label: getQuickPixivActionLabel(), action: 'current-pixiv', enabled: pixivReady, reason: pixivState.issues[0] || '' };
+    }
+  } else if (state.pixivCurrent.draftReady) {
+    title = 'Pixiv \u8349\u7a3f\u5df2\u5c31\u7eea';
+    lead = '\u6d4f\u89c8\u5668\u5df2\u505c\u5728\u6295\u7a3f\u9875\uff0c\u73b0\u5728\u53ea\u9700\u68c0\u67e5\u540e\u624b\u52a8\u53d1\u5e03\u3002';
+    hint = '\u8981\u662f\u60f3\u56de\u6536\u73b0\u573a\uff0c\u53ef\u4ee5\u987a\u624b\u6293\u4e00\u4efd Pixiv \u8c03\u8bd5\u5feb\u7167\u3002';
+    steps = [
+      { title: '\u5f53\u524d\u56fe\u7247\u5df2\u5904\u7406', detail: state.source.fileName || '', done: true },
+      { title: 'Pixiv \u8349\u7a3f\u5df2\u6253\u5f00', detail: state.pixivCurrent.status || '\u6d4f\u89c8\u5668\u5df2\u5c31\u4f4d', done: true },
+      { title: '\u6700\u540e\u68c0\u67e5', detail: '\u518d\u786e\u8ba4\u4e00\u904d\u6807\u9898\u3001\u6807\u7b7e\u548c\u6027\u63cf\u5199\uff0c\u65e0\u8bef\u540e\u518d\u70b9\u6295\u7a3f\u3002', done: false },
+    ];
+    primary = { label: '\u6293\u53d6 Pixiv \u5feb\u7167', action: 'capture-pixiv-debug' };
+    secondary = { label: '\u53bb\u53d1\u5e03\u9875', action: 'go-publish' };
+  } else if (state.ui.lastExportedPath) {
+    title = '\u7ed3\u679c\u5df2\u5bfc\u51fa';
+    lead = `\u521a\u624d\u7684\u7ed3\u679c\u5df2\u5199\u5230\uff1a${basename(state.ui.lastExportedPath)}`;
+    hint = pixivReady
+      ? '\u8fd8\u53ef\u4ee5\u76f4\u63a5\u7528\u5f53\u524d\u56fe\u7247\u7ee7\u7eed\u5355\u56fe Pixiv \u6d41\u7a0b\u3002'
+      : '\u4f60\u53ef\u4ee5\u5148\u6253\u5f00\u5bfc\u51fa\u4f4d\u7f6e\u770b\u6210\u54c1\uff0c\u6216\u7ee7\u7eed\u8c03\u6574\u5f53\u524d\u56fe\u7247\u3002';
+    steps = [
+      { title: '\u5f53\u524d\u56fe\u7247', detail: state.source.fileName || '', done: true },
+      { title: '\u5904\u7406\u7ed3\u679c\u5df2\u843d\u76d8', detail: basename(state.ui.lastExportedPath), done: true },
+      { title: '\u4e0b\u4e00\u6b65', detail: pixivReady ? '\u53ef\u4ee5\u76f4\u63a5\u5355\u56fe Pixiv\uff0c\u6216\u8005\u6362\u4e0b\u4e00\u5f20\u56fe\u3002' : '\u53ef\u4ee5\u6253\u5f00\u5bfc\u51fa\u4f4d\u7f6e\u518d\u7ee7\u7eed\u8c03\u6574\u3002', done: false },
+    ];
+    primary = { label: '\u6253\u5f00\u5bfc\u51fa\u4f4d\u7f6e', action: 'open-exported' };
+    secondary = pixivReady
+      ? { label: getQuickPixivActionLabel(), action: 'current-pixiv' }
+      : { label: '\u53bb\u7f16\u8f91\u9875', action: 'go-edit' };
+  } else if (processedPreview) {
+    title = pixivReady
+      ? '\u9884\u89c8\u5df2\u5c31\u7eea\uff0c\u53ef\u4ee5\u5bfc\u51fa\u6216\u5355\u56fe Pixiv'
+      : '\u9884\u89c8\u5df2\u5c31\u7eea';
+    lead = processingSummary.length
+      ? `\u8fd9\u5f20\u56fe\u5c06\u4ee5 ${processingSummary.join('\u3001')} \u7684\u7ec4\u5408\u8f93\u51fa\u3002`
+      : '\u5f53\u524d\u5904\u7406\u7ed3\u679c\u5df2\u751f\u6210\uff0c\u73b0\u5728\u53ef\u4ee5\u5bfc\u51fa\u6210\u54c1\u3002';
+    hint = pixivReady
+      ? '\u5355\u56fe Pixiv \u53ea\u4f1a\u5904\u7406\u5f53\u524d\u8fd9\u5f20\u56fe\uff0c\u4e0d\u4f1a\u8bfb\u53d6\u6279\u91cf\u76ee\u5f55\u3002'
+      : (pixivState.issues[0] || '\u53ef\u4ee5\u5148\u5bfc\u51fa\u7ed3\u679c\uff0c\u4e4b\u540e\u518d\u51b3\u5b9a\u662f\u5426\u6295\u7a3f\u3002');
+    steps = [
+      { title: '\u5df2\u8f7d\u5165\u5f53\u524d\u56fe', detail: state.source.fileName || '', done: true },
+      { title: '\u9884\u89c8\u7ed3\u679c\u5df2\u51c6\u5907\u597d', detail: state.preview?.fileName || '', done: true },
+      { title: '\u73b0\u5728\u53ef\u4ee5', detail: pixivReady ? '\u9009\u62e9\u5bfc\u51fa\uff0c\u6216\u8005\u76f4\u63a5\u7ee7\u7eed Pixiv \u6d41\u7a0b\u3002' : '\u5148\u5bfc\u51fa\u6210\u54c1\uff0c\u6216\u8005\u53bb\u53d1\u5e03\u9875\u8865\u9f50 Pixiv \u8bbe\u7f6e\u3002', done: false },
+    ];
+    primary = pixivReady
+      ? { label: getQuickPixivActionLabel(), action: 'current-pixiv' }
+      : { label: '\u5bfc\u51fa\u7ed3\u679c', action: 'export' };
+    secondary = pixivReady
+      ? { label: '\u5bfc\u51fa\u7ed3\u679c', action: 'export' }
+      : { label: '\u53bb\u7f16\u8f91\u9875', action: 'go-edit' };
+  } else {
+    title = '\u4e0b\u4e00\u6b65\uff1a\u5148\u751f\u6210\u9884\u89c8';
+    lead = processingSummary.length
+      ? `\u5f53\u524d\u4f1a\u5904\u7406\uff1a${processingSummary.join('\u3001')}`
+      : '\u4f60\u53ef\u4ee5\u5148\u76f4\u63a5\u751f\u6210\u4e00\u5f20\u9884\u89c8\uff0c\u6216\u8005\u5148\u53bb\u7f16\u8f91\u9875\u6253\u5f00\u9700\u8981\u7684\u5904\u7406\u6b65\u9aa4\u3002';
+    hint = refs.mosaicEnabled?.checked && !state.regions.length
+      ? '\u4f60\u5df2\u542f\u7528\u6253\u7801\uff0c\u4f46\u8fd8\u6ca1\u6709\u6846\u9009\u533a\u57df\uff0c\u8fd9\u4e00\u6b65\u76ee\u524d\u8fd8\u4e0d\u4f1a\u751f\u6548\u3002'
+      : '\u5148\u770b\u9884\u89c8\u518d\u51b3\u5b9a\u662f\u76f4\u63a5\u5bfc\u51fa\uff0c\u8fd8\u662f\u7ee7\u7eed Pixiv \u6d41\u7a0b\u3002';
+    steps = [
+      { title: '\u5df2\u9009\u56fe', detail: state.source.fileName || '', done: true },
+      { title: '\u8c03\u6574\u5904\u7406\u6b65\u9aa4', detail: processingSummary.length ? `\u5f53\u524d\u7ec4\u5408\uff1a${processingSummary.join('\u3001')}` : '\u8fd8\u6ca1\u6709\u6253\u5f00\u4efb\u4f55\u5904\u7406\u6b65\u9aa4\uff0c\u4e5f\u53ef\u4ee5\u76f4\u63a5\u9884\u89c8\u539f\u56fe\u3002', done: processingSummary.length > 0 },
+      { title: '\u751f\u6210\u9884\u89c8', detail: '\u5148\u770b\u4e00\u773c\u6548\u679c\uff0c\u518d\u51b3\u5b9a\u5bfc\u51fa\u6216 Pixiv\u3002', done: false },
+    ];
+    primary = { label: '\u751f\u6210\u9884\u89c8', action: 'render-preview' };
+    secondary = { label: '\u53bb\u7f16\u8f91\u9875', action: 'go-edit' };
+  }
+
+  refs.quickGuideTitle.textContent = title;
+  refs.quickGuideLead.textContent = lead;
+  refs.quickGuideHint.textContent = hint;
+  renderGuideSteps(steps);
+  configureGuideButton(refs.quickGuidePrimaryBtn, primary);
+  configureGuideButton(refs.quickGuideSecondaryBtn, secondary);
+}
+
+function updateWorkspaceActionState() {
+  const sourceReady = !!state.source;
+  const processedPreview = hasProcessedPreview();
+  const processingSummary = getProcessingSummary();
+  const pixivState = getCurrentPixivPreflight();
+  const pixivReason = pixivState.issues[0] || '';
+
+  setButtonAvailability(
+    refs.renderPreviewBtn,
+    sourceReady,
+    '\u8bf7\u5148\u9009\u62e9\u56fe\u7247',
+  );
+  setButtonAvailability(
+    refs.exportBtn,
+    sourceReady,
+    '\u8bf7\u5148\u9009\u62e9\u56fe\u7247',
+  );
+  setButtonAvailability(
+    refs.resetPreviewBtn,
+    sourceReady && processedPreview,
+    sourceReady ? '\u5f53\u524d\u5df2\u7ecf\u662f\u6e90\u56fe' : '\u8bf7\u5148\u9009\u62e9\u56fe\u7247',
+  );
+  setButtonAvailability(refs.quickPixivUploadBtn, pixivState.issues.length === 0, pixivReason);
+  setButtonAvailability(refs.testPixivUploadBtn, pixivState.issues.length === 0, pixivReason);
+
+  if (refs.quickActionHint) {
+    const notes = [];
+    if (!sourceReady) {
+      notes.push('\u5148\u9009\u4e00\u5f20\u56fe\uff0c\u9884\u89c8\u3001\u5bfc\u51fa\u548c\u5355\u56fe Pixiv \u624d\u4f1a\u53ef\u7528\u3002');
+    } else if (!processingSummary.length) {
+      notes.push('\u5f53\u524d\u6ca1\u6709\u542f\u7528\u5904\u7406\u6b65\u9aa4\uff0c\u751f\u6210\u9884\u89c8\u548c\u5bfc\u51fa\u4f1a\u76f4\u63a5\u6cbf\u7528\u539f\u56fe\u3002');
+    } else {
+      notes.push(`\u5f53\u524d\u4f1a\u6267\u884c\uff1a${processingSummary.join('\u3001')}\u3002`);
+    }
+    if (sourceReady && pixivState.issues.length) {
+      notes.push(pixivState.issues[0]);
+    } else if (sourceReady && pixivState.pixiv.enabled) {
+      notes.push('\u5355\u56fe Pixiv \u53ea\u4f1a\u5904\u7406\u5f53\u524d\u5de5\u4f5c\u533a\u8fd9\u5f20\u56fe\uff0c\u4e0d\u4f1a\u8bfb\u53d6\u6279\u91cf\u76ee\u5f55\u3002');
+    }
+    refs.quickActionHint.textContent = notes.join(' ');
+  }
 }
 
 function renderBatchRecovery(snapshot = {}) {
@@ -592,7 +1049,7 @@ function renderBatchRecovery(snapshot = {}) {
     refs.batchRecoveryCard.classList.toggle('hidden', !hasRecovery);
   }
   if (refs.batchLastError) {
-    refs.batchLastError.textContent = lastError || '当前还没有批量错误。';
+    refs.batchLastError.textContent = lastError || '\u5f53\u524d\u8fd8\u6ca1\u6709\u6279\u91cf\u9519\u8bef\u3002';
   }
   if (refs.batchFailedFiles) {
     refs.batchFailedFiles.innerHTML = '';
@@ -618,6 +1075,66 @@ function updateBatchRecovery() {
   if (refs.viewBatchErrorsBtn) {
     refs.viewBatchErrorsBtn.disabled = refs.batchRecoveryCard?.classList.contains('hidden') ?? true;
   }
+  updateBatchActionState();
+}
+
+function updateBatchActionState() {
+  const readiness = getBatchPreflight();
+  const retryReadiness = getBatchPreflight({ retryFailedOnly: true });
+  const running = !!state.batch.running;
+  const cancelRequested = !!state.batch.cancelRequested;
+  const failedFiles = retryReadiness.failedFiles || [];
+
+  if (refs.retryFailedBatchBtn) {
+    refs.retryFailedBatchBtn.textContent = failedFiles.length
+      ? `\u53ea\u91cd\u8dd1\u5931\u8d25\u9879\uff08${failedFiles.length}\uff09`
+      : '\u53ea\u91cd\u8dd1\u5931\u8d25\u9879';
+  }
+
+  setButtonAvailability(
+    refs.startBatchBtn,
+    !running && readiness.issues.length === 0,
+    running ? '\u5f53\u524d\u5df2\u6709\u6279\u91cf\u4efb\u52a1\u5728\u8fd0\u884c' : (readiness.issues[0] || ''),
+  );
+  setButtonAvailability(
+    refs.stopBatchBtn,
+    running && !cancelRequested,
+    running
+      ? '\u505c\u6b62\u8bf7\u6c42\u5df2\u53d1\u9001\uff0c\u6b63\u5728\u7b49\u5f85\u5f53\u524d\u56fe\u7247\u5b8c\u6210'
+      : '\u5f53\u524d\u6ca1\u6709\u8fd0\u884c\u4e2d\u7684\u6279\u91cf\u4efb\u52a1',
+  );
+  setButtonAvailability(
+    refs.retryFailedBatchBtn,
+    !running && retryReadiness.issues.length === 0,
+    running ? '\u8bf7\u5148\u7b49\u5f53\u524d\u6279\u91cf\u4efb\u52a1\u7ed3\u675f' : (retryReadiness.issues[0] || ''),
+  );
+
+  if (refs.batchActionHint) {
+    const batchLabel = readiness.batch.input_dir && readiness.batch.output_dir
+      ? `${basename(readiness.batch.input_dir)} -> ${basename(readiness.batch.output_dir)}`
+      : '';
+    let message = '';
+    if (running) {
+      message = state.batch.status || (state.batch.retryMode ? '\u6b63\u5728\u91cd\u8dd1\u5931\u8d25\u9879' : '\u6279\u91cf\u4efb\u52a1\u8fd0\u884c\u4e2d');
+    } else if (readiness.issues.length) {
+      message = readiness.issues[0];
+    } else if (failedFiles.length) {
+      message = `\u4e0a\u4e00\u8f6e\u6709 ${failedFiles.length} \u5f20\u5931\u8d25\u56fe\uff0c\u53ef\u4ee5\u76f4\u63a5\u53ea\u91cd\u8dd1\u5931\u8d25\u9879\u3002`;
+    } else if (readiness.warnings.length) {
+      message = readiness.warnings[0];
+    } else if (batchLabel) {
+      message = `\u51c6\u5907\u597d\u540e\uff0c\u5c31\u4f1a\u4ece ${batchLabel} \u5f00\u59cb\u6574\u6279\u5904\u7406\u3002`;
+    } else {
+      message = '\u9009\u597d\u8f93\u5165\u548c\u8f93\u51fa\u76ee\u5f55\u540e\uff0c\u5c31\u53ef\u4ee5\u4ece\u8fd9\u91cc\u5f00\u59cb\u6574\u6279\u5904\u7406\u3002';
+    }
+    refs.batchActionHint.textContent = message;
+  }
+}
+
+function refreshExperienceUi() {
+  updateQuickStartGuide();
+  updateWorkspaceActionState();
+  updateBatchActionState();
 }
 
 function hydrateWatermarkFontOptions(items) {
@@ -640,6 +1157,7 @@ function hydrateStaticOptions(data) {
   fillSelect(refs.pixivSexualDepiction, data.pixivSexualDepictionOptions || []);
   fillSelect(refs.pixivTagLanguage, data.pixivTagLanguageOptions || []);
   fillSelect(refs.pixivSafetyMode, data.pixivSafetyModeOptions || []);
+  fillSelect(refs.pixivLlmTitleStyle, PIXIV_TITLE_STYLE_OPTIONS);
   renderPixivLlmModelOptions([]);
   renderOnlineFontList([]);
   renderRecentDownloadedFonts(data.recentDownloadedFonts || []);
@@ -694,6 +1212,40 @@ function fillSelect(select, items) {
   });
 }
 
+function resolvePixivTitleStylePrompt(style) {
+  return PIXIV_TITLE_STYLE_PROMPTS[String(style || 'default')] ?? '';
+}
+
+function syncPixivTitlePromptPresetState() {
+  const style = refs.pixivLlmTitleStyle?.value || 'default';
+  const presetPrompt = resolvePixivTitleStylePrompt(style);
+  const currentPrompt = refs.pixivLlmPromptTitle?.value || '';
+  if (style !== 'custom' && currentPrompt !== presetPrompt) {
+    refs.pixivLlmPromptTitle.value = presetPrompt;
+  }
+}
+
+function syncPixivTitleStyleFromPrompt() {
+  if (!refs.pixivLlmTitleStyle || !refs.pixivLlmPromptTitle) {
+    return;
+  }
+  const currentPrompt = refs.pixivLlmPromptTitle.value || '';
+  const matched = PIXIV_TITLE_STYLE_OPTIONS.find((item) => {
+    if (item.value === 'custom') {
+      return false;
+    }
+    return resolvePixivTitleStylePrompt(item.value) === currentPrompt;
+  });
+  ensureSelectValue(refs.pixivLlmTitleStyle, matched ? matched.value : 'custom');
+}
+
+function resetPixivTitlePromptToPreset() {
+  syncPixivTitlePromptPresetState();
+  syncPixivTitleStyleFromPrompt();
+  scheduleSettingsSave();
+  refreshExperienceUi();
+}
+
 function basename(value) {
   return String(value || '').split(/[\\/]/).pop() || '';
 }
@@ -713,9 +1265,9 @@ function getWatermarkSampleText() {
   const mode = refs.wmSampleMode?.value || 'current';
   const currentText = String(refs.wmText?.value || '').trim();
   const presets = {
-    mixed: 'YourName · 龙族助手 Watermark 预览 2026',
-    zh: '龙族助手水印预览 · 你好世界',
-    en: 'Dragon Watermark Preview · Sample 2026',
+    mixed: 'YourName 路 龙族助手 Watermark 预览 2026',
+    zh: '龙族助手水印预览 路 你好世界',
+    en: 'Dragon Watermark Preview 路 Sample 2026',
   };
   if (mode === 'current') {
     return currentText || DEFAULT_WATERMARK_SAMPLE;
@@ -756,12 +1308,12 @@ function updateWatermarkFontPreview() {
   let preview = '默认：Dancing Script';
 
   if (selected === '__custom__') {
-    preview = customPath ? `自定义：${basename(customPath)}` : '自定义：未选择字体文件';
+    preview = customPath ? `自定义：${basename(customPath)}` : '鑷畾涔夛細鏈€夋嫨瀛椾綋鏂囦欢';
   } else if (selected) {
-    preview = getSelectedOptionLabel(refs.wmFontPreset) || `预设：${basename(selected)}`;
+    preview = getSelectedOptionLabel(refs.wmFontPreset) || `棰勮锛?{basename(selected)}`;
   }
 
-  refs.wmFontPreview.textContent = `当前字体：${preview}`;
+  refs.wmFontPreview.textContent = `褰撳墠瀛椾綋锛?{preview}`;
   refs.wmFontPreview.title = customPath || selected || '默认：Dancing Script';
 }
 
@@ -825,7 +1377,7 @@ async function refreshWatermarkFontSample() {
       return;
     }
     if (!result.ok) {
-      throw new Error(result.error || '字体预览加载失败');
+      throw new Error(result.error || '瀛椾綋棰勮加载失败');
     }
 
     const family = `wm-preview-${token}`;
@@ -904,7 +1456,7 @@ function renderOnlineFontList(items) {
   state.ui.onlineFontItems.forEach((item, index) => {
     const option = document.createElement('option');
     option.value = String(index);
-    option.textContent = `${item.family} · ${item.category || 'uncategorized'} · ${item.variant}`;
+    option.textContent = `${item.family} 路 ${item.category || 'uncategorized'} 路 ${item.variant}`;
     refs.onlineFontList.appendChild(option);
   });
   refs.downloadOnlineFontBtn.disabled = false;
@@ -955,7 +1507,7 @@ async function onLoadOnlineFonts() {
       throw new Error(result.error || '读取在线字体失败');
     }
     renderOnlineFontList(result.items || []);
-    refs.fontCatalogStatus.textContent = result.message || `已读取 ${result.items?.length || 0} 款 Google Fonts 字体`;
+    refs.fontCatalogStatus.textContent = result.message || `宸茶鍙?${result.items?.length || 0} 娆?Google Fonts 字体`;
     pushLog(refs.fontCatalogStatus.textContent);
     updateStatusBadge('状态: 在线字体列表已更新');
   } catch (error) {
@@ -982,7 +1534,7 @@ async function onDownloadOnlineFont() {
   }
 
   refs.downloadOnlineFontBtn.disabled = true;
-  refs.fontCatalogStatus.textContent = `正在下载：${item.family}`;
+  refs.fontCatalogStatus.textContent = `姝ｅ湪涓嬭浇锛?{item.family}`;
   try {
     const result = await window.pywebview.api.download_google_font(apiKey, item.family);
     if (!result.ok) {
@@ -1011,9 +1563,13 @@ async function onDownloadOnlineFont() {
 function hydrateBatchForm(config, snapshot) {
   refs.batchInputDir.value = snapshot?.inputDir || config.last_input_dir || '';
   refs.batchOutputDir.value = snapshot?.outputDir || config.last_output_dir || '';
+  updateBatchRecovery();
 }
 
 function hydratePixivForm(pixiv) {
+  state.ui.pixivSessionCookie = pixiv.cookie || '';
+  state.ui.pixivSessionCsrfToken = pixiv.csrf_token || '';
+  state.ui.pixivCanTestDirect = !!state.ui.pixivSessionCookie;
   refs.pixivEnabled.checked = !!pixiv.enabled;
   ensureSelectValue(refs.pixivUploadMode, pixiv.upload_mode || 'browser');
   ensureSelectValue(refs.pixivBrowser, pixiv.browser_channel || 'msedge');
@@ -1024,10 +1580,12 @@ function hydratePixivForm(pixiv) {
   ensureSelectValue(refs.pixivSafetyMode, pixiv.safety_mode || 'auto');
   refs.pixivSubmitMode.value = pixiv.auto_submit ? 'auto' : 'manual';
   refs.pixivProfileDir.value = pixiv.profile_dir || '';
-  refs.pixivCookie.value = pixiv.cookie || '';
-  refs.pixivCsrfToken.value = pixiv.csrf_token || '';
+  refs.pixivCookie.value = state.ui.pixivSessionCookie;
+  refs.pixivCsrfToken.value = state.ui.pixivSessionCsrfToken;
   refs.pixivLlmEnabled.checked = !!pixiv.llm_enabled;
   refs.pixivLlmImageEnabled.checked = !!pixiv.llm_image_enabled;
+  refs.pixivLlmTitleEnabled.checked = !!pixiv.llm_title_enabled;
+  ensureSelectValue(refs.pixivLlmTitleStyle, pixiv.llm_title_style || 'default');
   refs.pixivLlmBaseUrl.value = pixiv.llm_base_url || 'https://api.openai.com/v1';
   refs.pixivLlmApiKey.value = pixiv.llm_api_key || '';
   refs.pixivRememberLlmApiKey.checked = !!pixiv.remember_llm_api_key;
@@ -1037,6 +1595,8 @@ function hydratePixivForm(pixiv) {
   refs.pixivLlmTimeout.value = String(pixiv.llm_timeout ?? 60);
   refs.pixivLlmPromptMetadata.value = pixiv.llm_metadata_prompt || '';
   refs.pixivLlmPromptImage.value = pixiv.llm_image_prompt || '';
+  refs.pixivLlmPromptTitle.value = pixiv.llm_title_prompt || '';
+  syncPixivTitleStyleFromPrompt();
   refs.pixivTitleTemplate.value = pixiv.title_template || '{stem}';
   refs.pixivTags.value = pixiv.tags || '';
   refs.pixivCaption.value = pixiv.caption || '';
@@ -1095,7 +1655,7 @@ function renderRecentImages() {
   if (!state.recentImages.length) {
     const empty = document.createElement('div');
     empty.className = 'recent-item empty';
-    empty.innerHTML = '<strong>还没有最近记录</strong><span>选一次图片后，这里会保留最近 8 张，方便快速回到工作现场。</span>';
+    empty.innerHTML = '<strong>杩樻病鏈夋渶杩戣褰</strong><span>閫変竴娆″浘鐗囧悗锛岃繖閲屼細淇濈暀鏈€杩?8 寮狅紝鏂逛究蹇€熷洖鍒板伐浣滅幇鍦恒€</span>';
     refs.recentList.appendChild(empty);
     return;
   }
@@ -1104,7 +1664,7 @@ function renderRecentImages() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'recent-item';
-    button.innerHTML = `<strong>${escapeHtml(item.fileName)}</strong><span>#${index + 1} · ${escapeHtml(item.parent)}</span>`;
+    button.innerHTML = `<strong>${escapeHtml(item.fileName)}</strong><span>#${index + 1} 路 ${escapeHtml(item.parent)}</span>`;
     button.addEventListener('click', () => {
       void loadImagePath(item.path, '从最近记录加载');
     });
@@ -1118,15 +1678,15 @@ async function onOpenImage() {
 }
 
 async function loadImagePath(path, sourceLabel = '载入图片') {
-  updateStatusBadge('状态: 正在加载图片');
+  updateStatusBadge('鐘舵€? 正在加载图片');
   const result = await window.pywebview.api.open_image_path(path);
   handleLoadResult(result, sourceLabel);
 }
 
 async function loadImageFile(file, sourceLabel = '拖拽载入') {
   if (!file) {
-    pushLog('没有可读取的拖拽文件');
-    updateStatusBadge('状态: 拖拽载入失败');
+    pushLog('娌℃湁鍙取的拖拽文件');
+    updateStatusBadge('鐘舵€? 拖拽载入失败');
     return;
   }
 
@@ -1136,14 +1696,14 @@ async function loadImageFile(file, sourceLabel = '拖拽载入') {
     return;
   }
 
-  updateStatusBadge('状态: 正在读取拖拽图片');
+  updateStatusBadge('鐘舵€? 正在读取拖拽图片');
   try {
     const dataUrl = await fileToDataUrl(file);
     const result = await window.pywebview.api.open_image_blob(file.name || 'dropped-image', dataUrl);
     handleLoadResult(result, `${sourceLabel}（兼容模式）`);
   } catch (error) {
     pushLog(`拖拽载入失败: ${error?.message || error}`);
-    updateStatusBadge('状态: 拖拽载入失败');
+    updateStatusBadge('鐘舵€? 拖拽载入失败');
   }
 }
 
@@ -1151,7 +1711,7 @@ function handleLoadResult(result, sourceLabel) {
   if (!result.ok) {
     if (!result.cancelled) {
       pushLog(result.error || '加载图片失败');
-      updateStatusBadge('状态: 载入失败');
+      updateStatusBadge('鐘舵€? 载入失败');
     }
     return;
   }
@@ -1161,7 +1721,7 @@ function handleLoadResult(result, sourceLabel) {
   updateSource(result.source);
   updatePreview(result.preview || result.source);
   updateRecentImages(result.recentImages || state.recentImages);
-  updateStatusBadge(`状态: ${result.message}`);
+  updateStatusBadge(`鐘舵€? ${result.message}`);
   pushLog(`${sourceLabel}: ${result.message}`);
 }
 
@@ -1187,8 +1747,9 @@ async function onBrowseDirectory(targetRef, label) {
   const result = await window.pywebview.api.choose_directory_dialog(targetRef.value.trim());
   if (result.ok) {
     targetRef.value = result.path;
-    pushLog(`${label}?${result.path}`);
+    pushLog(`${label}: ${result.path}`);
     updateBatchRecovery();
+    refreshExperienceUi();
   }
 }
 
@@ -1206,7 +1767,7 @@ async function onLoadPixivLlmModels() {
     updateStatusBadge(result.message || '状态: 已更新模型列表');
   } catch (error) {
     pushLog(`读取 Pixiv LLM 模型失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('状态: 读取模型列表失败');
+    updateStatusBadge('鐘舵€? 读取模型列表失败');
   } finally {
     syncPixivFieldState();
   }
@@ -1214,11 +1775,11 @@ async function onLoadPixivLlmModels() {
 
 async function onPreviewPixivSubmission() {
   refs.previewPixivBtn.disabled = true;
-  updateStatusBadge('状态: 正在生成当前 Pixiv 投稿预览');
+  updateStatusBadge('鐘舵€? 正在生成当前 Pixiv 鎶曠棰勮');
   const result = await window.pywebview.api.preview_pixiv_submission(buildSettings());
   if (!result.ok) {
-    pushLog(result.error || 'Pixiv 投稿预览生成失败');
-    updateStatusBadge('状态: Pixiv 投稿预览生成失败');
+    pushLog(result.error || 'Pixiv 鎶曠棰勮生成失败');
+    updateStatusBadge('鐘舵€? Pixiv 鎶曠棰勮生成失败');
     refs.previewPixivBtn.disabled = false;
     syncPixivFieldState();
     return;
@@ -1227,6 +1788,9 @@ async function onPreviewPixivSubmission() {
   const preview = result.preview || {};
   pushLog(`[Pixiv Preview] File: ${preview.fileName || ''}`);
   pushLog(`[Pixiv Preview] Title: ${preview.title || ''}`);
+  if (preview.titleAiEnabled || preview.titleStyleLabel) {
+    pushLog(`[Pixiv Preview] Title style: ${preview.titleStyleLabel || preview.titleStyle || ''}${preview.titleAiEnabled ? ' / AI润色已开启' : ''}`);
+  }
   pushLog(`[Pixiv Preview] Tags (${preview.tagCount || 0}/${preview.maxTags || 10}): ${((preview.tags || []).join(', ')) || '(empty)'}`);
   pushLog(`[Pixiv Preview] Caption: ${preview.caption || '(empty)'}`);
   pushLog(`[Pixiv Preview] Mode: ${preview.uploadModeLabel || preview.uploadMode || ''} / ${preview.submitModeLabel || preview.submitMode || ''}`);
@@ -1236,27 +1800,27 @@ async function onPreviewPixivSubmission() {
   (preview.infos || []).forEach((message) => pushLog(`[Pixiv Preview] ${message}`));
   (preview.warnings || []).forEach((message) => pushLog(`[Pixiv Preview] Warning: ${message}`));
   (preview.errors || []).forEach((message) => pushLog(`[Pixiv Preview] Error: ${message}`));
-  updateStatusBadge(`状态: ${result.message || 'Pixiv 投稿预览已就绪'}`);
+  updateStatusBadge('状态: ' + (result.message || 'Pixiv 投稿预览已就绪'));
   refs.previewPixivBtn.disabled = false;
   syncPixivFieldState();
 }
 
 async function onTestPixivUploadCurrent() {
   const actionLabel = getPixivCurrentActionLabel();
-  updateStatusBadge(`状态: 正在准备${actionLabel}`);
+  updateStatusBadge(`鐘舵€? 正在准备${actionLabel}`);
   try {
     const result = await window.pywebview.api.start_pixiv_upload_current(buildSettings());
     if (!result.ok) {
       (result.logs || []).forEach((message) => pushLog(message));
       pushLog(result.error || `Pixiv ${actionLabel}失败`);
-      updateStatusBadge(`状态: Pixiv ${actionLabel}失败`);
+      updateStatusBadge(`鐘舵€? Pixiv ${actionLabel}失败`);
       syncPixivFieldState();
       return;
     }
     applyPixivCurrentSnapshot(result);
   } catch (error) {
     pushLog(`Pixiv ${actionLabel}失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge(`状态: Pixiv ${actionLabel}失败`);
+    updateStatusBadge(`鐘舵€? Pixiv ${actionLabel}失败`);
   }
 }
 
@@ -1269,33 +1833,156 @@ function getFirstPixivTagHint() {
 
 async function onCapturePixivDebug() {
   refs.capturePixivDebugBtn.disabled = true;
-  updateStatusBadge('状态: 正在抓取 Pixiv 调试快照');
+  updateStatusBadge('鐘舵€? 正在抓取 Pixiv 调试快照');
   try {
     const result = await window.pywebview.api.capture_interactive_pixiv_debug(getFirstPixivTagHint());
     if (!result.ok) {
       (result.logs || []).forEach((message) => pushLog(message));
       pushLog(result.error || 'Pixiv 调试快照抓取失败');
-      updateStatusBadge('状态: Pixiv 调试快照抓取失败');
+      updateStatusBadge('鐘舵€? Pixiv 调试快照抓取失败');
       return;
     }
 
     (result.logs || []).forEach((message) => pushLog(message));
-    updateStatusBadge(`状态: ${result.message || '已抓取 Pixiv 调试快照'}`);
+    updateStatusBadge(`鐘舵€? ${result.message || '宸叉姄鍙?Pixiv 调试快照'}`);
   } catch (error) {
     pushLog(`Pixiv 调试快照抓取失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('状态: Pixiv 调试快照抓取失败');
+    updateStatusBadge('鐘舵€? Pixiv 调试快照抓取失败');
   } finally {
     syncPixivFieldState();
   }
 }
 
+async function onImportPixivBrowserAuth() {
+  refs.importPixivAuthBtn.disabled = true;
+  updatePixivDirectStatus('正在从浏览器导入 Pixiv 登录态…', 'pending');
+  updateStatusBadge('状态: 正在导入 Pixiv 直传登录态');
+  try {
+    const result = await window.pywebview.api.import_pixiv_browser_auth({ pixiv: readPixivSettings() });
+    if (!result.ok) {
+      throw new Error(result.error || '导入 Pixiv 登录态失败');
+    }
+
+    ensureSelectValue(refs.pixivUploadMode, 'direct');
+    if (result.browserChannel) {
+      ensureSelectValue(refs.pixivBrowser, result.browserChannel);
+    }
+    state.ui.pixivSessionCookie = result.cookie || '';
+    state.ui.pixivSessionCsrfToken = result.csrfToken || '';
+    state.ui.pixivCanTestDirect = !!state.ui.pixivSessionCookie;
+    refs.pixivCookie.value = state.ui.pixivSessionCookie;
+    refs.pixivCsrfToken.value = state.ui.pixivSessionCsrfToken;
+    (result.logs || []).forEach((message) => pushLog(message));
+    if (state.bootstrap && result.config) {
+      state.bootstrap.config = result.config;
+    }
+    await persistSettingsSilently();
+    syncPixivFieldState();
+    if (refs.testPixivDirectBtn && refs.pixivEnabled.checked && state.ui.pixivSessionCookie) {
+      refs.testPixivDirectBtn.disabled = false;
+    }
+    let finalMessage = `${result.message}${result.cookieCount ? `（${result.cookieCount} 个 Cookie）` : ''}`;
+    let authStatus = result.needsCsrfProbe ? 'pending' : 'saved';
+
+    if (result.needsCsrfProbe && state.ui.pixivSessionCookie) {
+      updatePixivDirectStatus('已导入 Cookie，正在自动检测直传并补齐 CSRF Token…', 'pending');
+      updateStatusBadge('状态: 正在自动补齐 Pixiv CSRF Token');
+      try {
+        const probeResult = await window.pywebview.api.test_pixiv_direct({ pixiv: readPixivSettings() });
+        if (!probeResult.ok) {
+          throw new Error(probeResult.error || 'Pixiv 直传检测失败');
+        }
+        if (probeResult.csrfToken) {
+          state.ui.pixivSessionCsrfToken = probeResult.csrfToken;
+          refs.pixivCsrfToken.value = state.ui.pixivSessionCsrfToken;
+        }
+        (probeResult.logs || []).forEach((message) => pushLog(message));
+        if (probeResult.url) {
+          pushLog(`[Pixiv] 直传检测页面: ${probeResult.url}`);
+        }
+        if (state.bootstrap && probeResult.config) {
+          state.bootstrap.config = probeResult.config;
+        }
+        await persistSettingsSilently();
+        syncPixivFieldState();
+        if (refs.testPixivDirectBtn) {
+          refs.testPixivDirectBtn.disabled = false;
+          refs.testPixivDirectBtn.classList.add('accent');
+          refs.testPixivDirectBtn.classList.remove('ghost');
+        }
+        authStatus = probeResult.csrfToken ? 'saved' : 'pending';
+        finalMessage = probeResult.message || finalMessage;
+      } catch (probeError) {
+        pushLog(`Pixiv 自动补齐 CSRF 失败: ${probeError && probeError.message ? probeError.message : probeError}`);
+        authStatus = 'pending';
+      }
+    }
+
+    updatePixivDirectStatus(
+      finalMessage,
+      authStatus,
+    );
+    updateStatusBadge(`状态: ${finalMessage}`);
+  } catch (error) {
+    syncPixivFieldState();
+    updatePixivDirectStatus(
+      `导入失败：${error && error.message ? error.message : error}`,
+      'error',
+    );
+    pushLog(`导入 Pixiv 登录态失败: ${error && error.message ? error.message : error}`);
+    updateStatusBadge('状态: 导入 Pixiv 登录态失败');
+  }
+}
+
+async function onTestPixivDirect() {
+  refs.testPixivDirectBtn.disabled = true;
+  updatePixivDirectStatus('正在检测 Pixiv 直传可用性…', 'pending');
+  updateStatusBadge('状态: 正在检测 Pixiv 直传');
+  try {
+    const result = await window.pywebview.api.test_pixiv_direct({ pixiv: readPixivSettings() });
+    if (!result.ok) {
+      throw new Error(result.error || 'Pixiv 直传检测失败');
+    }
+
+    if (result.csrfToken) {
+      state.ui.pixivSessionCsrfToken = result.csrfToken;
+      refs.pixivCsrfToken.value = state.ui.pixivSessionCsrfToken;
+    }
+    if (refs.pixivCookie.value.trim() || state.ui.pixivSessionCookie) {
+      state.ui.pixivCanTestDirect = true;
+    }
+    (result.logs || []).forEach((message) => pushLog(message));
+    if (result.url) {
+      pushLog(`[Pixiv] 直传检测页面: ${result.url}`);
+    }
+    if (state.bootstrap && result.config) {
+      state.bootstrap.config = result.config;
+    }
+    await persistSettingsSilently();
+    syncPixivFieldState();
+    if (refs.testPixivDirectBtn && refs.pixivEnabled.checked && (refs.pixivCookie.value.trim() || state.ui.pixivSessionCookie)) {
+      refs.testPixivDirectBtn.disabled = false;
+    }
+    const authStatus = result.needsCsrfProbe ? 'pending' : 'saved';
+    updatePixivDirectStatus(result.message, authStatus);
+    updateStatusBadge(`状态: ${result.message}`);
+  } catch (error) {
+    syncPixivFieldState();
+    updatePixivDirectStatus(
+      `检测失败：${error && error.message ? error.message : error}`,
+      'error',
+    );
+    pushLog(`Pixiv 直传检测失败: ${error && error.message ? error.message : error}`);
+    updateStatusBadge('状态: Pixiv 直传检测失败');
+  }
+}
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
-  updateStatusBadge('状态: 正在测试 Pixiv LLM');
+  updateStatusBadge('鐘舵€? 正在测试 Pixiv LLM');
   const result = await window.pywebview.api.test_pixiv_llm({ pixiv: readPixivSettings() });
   if (!result.ok) {
     pushLog(result.error || 'Pixiv LLM 测试失败');
-    updateStatusBadge('状态: Pixiv LLM 测试失败');
+    updateStatusBadge('鐘舵€? Pixiv LLM 测试失败');
     syncPixivFieldState();
     return;
   }
@@ -1309,38 +1996,70 @@ async function onTestPixivLlm() {
     pushLog(`[Pixiv LLM] Image tags: ${result.imageTags.join(', ')}`);
   }
   pushLog(`[Pixiv LLM] Combined tags: ${(result.tags || []).join(', ')}`);
-  updateStatusBadge(`状态: ${result.message}`);
+  updateStatusBadge(`鐘舵€? ${result.message}`);
   syncPixivFieldState();
 }
 
-async function onStartBatch() {
-  const batch = readBatchSettings();
+async function onStartBatch(options = {}) {
+  const retryFailedOnly = !!options.retryFailedOnly;
+  const readiness = getBatchPreflight({ retryFailedOnly });
+  const failedFiles = Array.isArray(state.batch.failedFiles) ? state.batch.failedFiles.slice() : [];
   setSidebarPage('publish');
-  if (!batch.input_dir || !batch.output_dir) {
-    pushLog('请先填写批量输入目录和输出目录');
-    updateStatusBadge('状态: 批量任务缺少目录');
+
+  if (readiness.issues.length) {
+    const message = retryFailedOnly
+      ? `\u6682\u65f6\u4e0d\u80fd\u91cd\u8dd1\u5931\u8d25\u9879\uff1a${readiness.issues[0]}`
+      : readiness.issues[0];
+    pushLog(message);
+    updateStatusBadge(`\u72b6\u6001: ${message}`);
+    refreshExperienceUi();
     return;
+  }
+
+  const payload = buildSettings();
+  if (retryFailedOnly) {
+    payload.batch.retry_failed_files = failedFiles;
   }
 
   refs.startBatchBtn.disabled = true;
   refs.stopBatchBtn.disabled = true;
-  updateStatusBadge('状态: 正在提交批量任务');
-  refs.batchStatusText.textContent = '正在提交批量任务';
-  refs.batchCurrentFile.textContent = '等待后台开始处理';
+  if (refs.retryFailedBatchBtn) {
+    refs.retryFailedBatchBtn.disabled = true;
+  }
+  updateStatusBadge(`\u72b6\u6001: ${retryFailedOnly ? '\u6b63\u5728\u63d0\u4ea4\u5931\u8d25\u9879\u91cd\u8dd1' : '\u6b63\u5728\u63d0\u4ea4\u6279\u91cf\u4efb\u52a1'}`);
+  refs.batchStatusText.textContent = retryFailedOnly ? '\u6b63\u5728\u63d0\u4ea4\u5931\u8d25\u9879\u91cd\u8dd1' : '\u6b63\u5728\u63d0\u4ea4\u6279\u91cf\u4efb\u52a1';
+  refs.batchCurrentFile.textContent = retryFailedOnly
+    ? `\u51c6\u5907\u91cd\u8dd1 ${failedFiles.length} \u4e2a\u5931\u8d25\u9879`
+    : '\u7b49\u5f85\u540e\u53f0\u5f00\u59cb\u5904\u7406';
   refs.batchProgressFill.style.width = '0%';
 
-  pushLog(`批量任务准备提交：${batch.input_dir} -> ${batch.output_dir}`);
-  const result = await window.pywebview.api.start_batch(buildSettings());
-  if (!result.ok) {
-    refs.startBatchBtn.disabled = false;
-    refs.stopBatchBtn.disabled = true;
-    pushLog(result.error || '批量任务创建失败');
-    updateStatusBadge('状态: 批量任务创建失败');
-    refs.batchStatusText.textContent = '创建失败';
-    return;
-  }
+  pushLog(
+    retryFailedOnly
+      ? `\u51c6\u5907\u91cd\u8dd1\u5931\u8d25\u9879\uff1a${failedFiles.join(', ')}`
+      : `\u6279\u91cf\u4efb\u52a1\u51c6\u5907\u63d0\u4ea4\uff1a${readiness.batch.input_dir} -> ${readiness.batch.output_dir}`,
+  );
 
-  applyBatchSnapshot(result);
+  try {
+    const result = await window.pywebview.api.start_batch(payload);
+    if (!result.ok) {
+      pushLog(result.error || (retryFailedOnly ? '\u5931\u8d25\u9879\u91cd\u8dd1\u4efb\u52a1\u521b\u5efa\u5931\u8d25' : '\u6279\u91cf\u4efb\u52a1\u521b\u5efa\u5931\u8d25'));
+      updateStatusBadge(`\u72b6\u6001: ${retryFailedOnly ? '\u5931\u8d25\u9879\u91cd\u8dd1\u4efb\u52a1\u521b\u5efa\u5931\u8d25' : '\u6279\u91cf\u4efb\u52a1\u521b\u5efa\u5931\u8d25'}`);
+      refs.batchStatusText.textContent = '\u521b\u5efa\u5931\u8d25';
+      refreshExperienceUi();
+      return;
+    }
+
+    applyBatchSnapshot(result);
+  } catch (error) {
+    pushLog(`\u6279\u91cf\u4efb\u52a1\u63d0\u4ea4\u5931\u8d25: ${error && error.message ? error.message : error}`);
+    updateStatusBadge('\u72b6\u6001: \u6279\u91cf\u4efb\u52a1\u63d0\u4ea4\u5931\u8d25');
+    refs.batchStatusText.textContent = '\u63d0\u4ea4\u5931\u8d25';
+    refreshExperienceUi();
+  }
+}
+
+async function onRetryFailedBatch() {
+  await onStartBatch({ retryFailedOnly: true });
 }
 
 async function onStopBatch() {
@@ -1348,18 +2067,18 @@ async function onStopBatch() {
     return;
   }
   refs.stopBatchBtn.disabled = true;
-  updateStatusBadge('状态: 正在请求停止批量任务');
+  updateStatusBadge('鐘舵€? 姝ｅ湪璇锋眰鍋滄批量任务');
   try {
     const result = await window.pywebview.api.stop_batch();
     if (!result.ok) {
-      throw new Error(result.error || '停止批量任务失败');
+      throw new Error(result.error || '鍋滄批量任务失败');
     }
     applyBatchSnapshot(result);
     pushLog(result.message || '已请求停止批量任务');
   } catch (error) {
     refs.stopBatchBtn.disabled = false;
-    pushLog(`停止批量任务失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('状态: 停止批量任务失败');
+    pushLog(`鍋滄批量任务失败: ${error && error.message ? error.message : error}`);
+    updateStatusBadge('鐘舵€? 鍋滄批量任务失败');
   }
 }
 
@@ -1369,51 +2088,55 @@ async function onRenderPreview() {
     return;
   }
 
-  updateStatusBadge('状态: 正在生成预览');
+  updateStatusBadge('鐘舵€? 正在生成预览');
   const result = await window.pywebview.api.render_preview(buildSettings());
   if (!result.ok) {
     pushLog(result.error || '预览失败');
-    updateStatusBadge('状态: 预览失败');
+    updateStatusBadge('鐘舵€? 预览失败');
     return;
   }
 
   updateSource(result.source);
   updatePreview(result.preview);
   (result.logs || []).forEach(pushLog);
-  updateStatusBadge(`状态: ${result.message}`);
+  updateStatusBadge(`鐘舵€? ${result.message}`);
 }
 
 async function onExport() {
   if (!state.source) {
-    pushLog('请先选择图片');
+    pushLog('\u8bf7\u5148\u9009\u62e9\u56fe\u7247');
     return;
   }
 
-  updateStatusBadge('状态: 正在导出');
+  updateStatusBadge('\u72b6\u6001: \u6b63\u5728\u5bfc\u51fa');
   const result = await window.pywebview.api.export_result(buildSettings());
   if (!result.ok) {
     if (!result.cancelled) {
-      pushLog(result.error || '导出失败');
-      updateStatusBadge('状态: 导出失败');
+      pushLog(result.error || '\u5bfc\u51fa\u5931\u8d25');
+      updateStatusBadge('\u72b6\u6001: \u5bfc\u51fa\u5931\u8d25');
     }
     return;
   }
 
+  state.ui.lastExportedPath = result.exportedPath || '';
   if (result.preview) {
     updatePreview(result.preview);
+  } else {
+    refreshExperienceUi();
   }
   (result.logs || []).forEach(pushLog);
-  updateStatusBadge(`状态: ${result.message}`);
+  updateStatusBadge(`\u72b6\u6001: ${result.message}`);
 }
 
 async function onResetPreview() {
   const result = await window.pywebview.api.reset_preview();
   if (!result.ok) {
-    pushLog(result.error || '恢复失败');
+    pushLog(result.error || '\u6062\u590d\u5931\u8d25');
     return;
   }
+  state.ui.lastExportedPath = '';
   updatePreview(result.preview);
-  updateStatusBadge(`状态: ${result.message}`);
+  updateStatusBadge(`\u72b6\u6001: ${result.message}`);
   pushLog(result.message);
 }
 
@@ -1425,6 +2148,8 @@ function readBatchSettings() {
 }
 
 function readPixivSettings() {
+  const cookie = refs.pixivCookie.value.trim() || state.ui.pixivSessionCookie || '';
+  const csrfToken = refs.pixivCsrfToken.value.trim() || state.ui.pixivSessionCsrfToken || '';
   return {
     enabled: refs.pixivEnabled.checked,
     upload_mode: refs.pixivUploadMode.value,
@@ -1436,10 +2161,12 @@ function readPixivSettings() {
     tag_language: refs.pixivTagLanguage.value,
     safety_mode: refs.pixivSafetyMode.value,
     profile_dir: refs.pixivProfileDir.value.trim(),
-    cookie: refs.pixivCookie.value.trim(),
-    csrf_token: refs.pixivCsrfToken.value.trim(),
+    cookie,
+    csrf_token: csrfToken,
     llm_enabled: refs.pixivLlmEnabled.checked,
     llm_image_enabled: refs.pixivLlmImageEnabled.checked,
+    llm_title_enabled: refs.pixivLlmTitleEnabled.checked,
+    llm_title_style: refs.pixivLlmTitleStyle.value,
     llm_base_url: refs.pixivLlmBaseUrl.value.trim(),
     llm_api_key: refs.pixivLlmApiKey.value.trim(),
     remember_llm_api_key: refs.pixivRememberLlmApiKey.checked,
@@ -1448,6 +2175,7 @@ function readPixivSettings() {
     llm_timeout: Number.parseInt(refs.pixivLlmTimeout.value || '60', 10),
     llm_metadata_prompt: refs.pixivLlmPromptMetadata.value,
     llm_image_prompt: refs.pixivLlmPromptImage.value,
+    llm_title_prompt: refs.pixivLlmPromptTitle.value,
     title_template: refs.pixivTitleTemplate.value.trim(),
     tags: refs.pixivTags.value,
     caption: refs.pixivCaption.value,
@@ -1491,16 +2219,19 @@ function updatePixivModeHint() {
     refs.quickPixivUploadBtn.textContent = getQuickPixivActionLabel();
   }
   if (!enabled) {
-    refs.pixivModeHint.textContent = '启用后，首页和发布页的“当前图片”按钮都会只处理当前加载或拖入的这张图；如果改用直传模式，还需要补齐 Cookie 和 CSRF Token。';
+    refs.pixivModeHint.textContent = '启用后，首页和发布页的当前图片按钮都会只处理当前加载或拖入的这张图；如果改用直传模式，还需要补齐 Cookie 和 CSRF Token。';
     return;
   }
+
   let message = '首页和发布页里的当前图片按钮，只会处理当前工作区中这张已加载或拖入的图片，不会读取批量目录。';
   message += directMode
     ? ' 当前会走 Cookie + CSRF 直传模式，处理完成后会直接尝试提交到 Pixiv。'
     : ' 当前会先打开浏览器草稿页，方便你在 Pixiv 投稿页里再检查一次标题、标签和说明。';
+
   if (!directMode && manualSubmit) {
     message += ' 如果要跑批量目录，浏览器手动确认目前只支持单图；多图请改用自动投稿。';
   }
+
   if (sexualMode === 'auto') {
     message += llmEnabled
       ? ' 性描写选项目前交给 LLM 自动判断，会结合当前图片内容来决定。'
@@ -1510,27 +2241,35 @@ function updatePixivModeHint() {
   } else if (sexualMode === 'no') {
     message += ' 性描写选项会固定为无。';
   }
+
   if (llmEnabled && llmImageEnabled) {
     message += ' 标签整理会同时参考 metadata 和看图结果，再经 OpenAI-compatible 模型收敛成更贴近 Pixiv 的标签。';
   } else if (llmEnabled) {
     message += ' 标签整理当前只会基于 metadata，并交给 OpenAI-compatible 模型改写成更贴近 Pixiv 的表达。';
   }
+  if (llmEnabled && refs.pixivLlmTitleEnabled.checked) {
+    message += ' 标题会先按模板生成，再交给 LLM 做一次润色。';
+  }
+
   if (refs.pixivSafetyMode.value === 'strict') {
     message += ' 严格安全模式下，疑似 NSFW 的图会先被拦下，不会自动投稿。';
   } else if (refs.pixivSafetyMode.value === 'auto') {
-    message += ' 自动安全模式下，会结合内容与标签判断是否需要切到全年龄外的 R-18 / R-18G 设置。';
+    message += ' 自动安全模式下，会结合内容与标签判断是否需要切到全年龄之外的 R-18 / R-18G 设置。';
   }
+
   refs.pixivModeHint.textContent = message;
 }
-
 function syncPixivFieldState() {
   const enabled = refs.pixivEnabled.checked;
   const directMode = refs.pixivUploadMode.value === 'direct';
   const llmEnabled = refs.pixivLlmEnabled.checked;
-  const llmImageEnabled = refs.pixivLlmImageEnabled.checked;
+  const llmTitleEnabled = refs.pixivLlmTitleEnabled.checked;
   const pixivCurrentRunning = !!state.pixivCurrent.running;
   const pixivDraftReady = !!state.pixivCurrent.draftReady;
   const credentialSupported = state.bootstrap?.supportsCredentialStorage !== false;
+  const effectiveCookie = refs.pixivCookie.value.trim() || state.ui.pixivSessionCookie || '';
+  const effectiveCsrfToken = refs.pixivCsrfToken.value.trim() || state.ui.pixivSessionCsrfToken || '';
+  const canTestDirectBySession = !!effectiveCookie || !!state.ui.pixivCanTestDirect;
   [
     refs.pixivUploadMode,
     refs.pixivVisibility,
@@ -1564,6 +2303,9 @@ function syncPixivFieldState() {
   refs.pixivCookie.disabled = !enabled || !directMode;
   refs.pixivCsrfToken.disabled = !enabled || !directMode;
   refs.pixivLlmImageEnabled.disabled = !enabled || !llmEnabled;
+  refs.pixivLlmTitleEnabled.disabled = !enabled || !llmEnabled;
+  refs.pixivLlmTitleStyle.disabled = !enabled || !llmEnabled || !llmTitleEnabled;
+  refs.resetPixivTitlePromptBtn.disabled = !enabled || !llmEnabled || !llmTitleEnabled;
   refs.pixivLlmBaseUrl.disabled = !enabled || !llmEnabled;
   refs.pixivLlmApiKey.disabled = !enabled || !llmEnabled;
   refs.pixivRememberLlmApiKey.disabled = !enabled || !llmEnabled || !credentialSupported;
@@ -1575,21 +2317,45 @@ function syncPixivFieldState() {
   refs.pixivLlmTimeout.disabled = !enabled || !llmEnabled;
   refs.pixivLlmPromptMetadata.disabled = !enabled || !llmEnabled;
   refs.pixivLlmPromptImage.disabled = !enabled || !llmEnabled;
+  refs.pixivLlmPromptTitle.disabled = !enabled || !llmEnabled || !llmTitleEnabled;
   refs.testPixivLlmBtn.disabled = !enabled || !llmEnabled;
   refs.previewPixivBtn.disabled = !enabled || pixivCurrentRunning;
   refs.testPixivUploadBtn.disabled = !enabled || pixivCurrentRunning;
   if (refs.quickPixivUploadBtn) {
     refs.quickPixivUploadBtn.disabled = !enabled || pixivCurrentRunning;
   }
+  if (refs.importPixivAuthBtn) {
+    refs.importPixivAuthBtn.disabled = pixivCurrentRunning;
+  }
+  if (refs.testPixivDirectBtn) {
+    const canTestDirect = !pixivCurrentRunning && canTestDirectBySession;
+    refs.testPixivDirectBtn.disabled = !canTestDirect;
+    refs.testPixivDirectBtn.classList.toggle('accent', canTestDirect);
+    refs.testPixivDirectBtn.classList.toggle('ghost', !canTestDirect);
+    refs.testPixivDirectBtn.title = canTestDirect
+      ? '当前已经拿到 Pixiv Cookie，可以点这里自动补齐 CSRF Token'
+      : '需要先拿到 Pixiv Cookie，才能检测直传';
+  }
   refs.capturePixivDebugBtn.disabled = !enabled || directMode || pixivCurrentRunning || !pixivDraftReady;
+
+  if (!effectiveCookie) {
+    updatePixivDirectStatus('还没有 Pixiv 登录态；可以直接点从浏览器导入自动补齐 Cookie 和 CSRF。', 'idle');
+  } else if (!effectiveCsrfToken) {
+    updatePixivDirectStatus('Cookie 已填入，但还缺 CSRF Token；可以点检测直传自动补齐。', 'pending');
+  } else if (!enabled) {
+    updatePixivDirectStatus('直传凭证已经就绪；即使还没启用 Pixiv 自动上传，也可以先点检测直传确认可用性。', 'saved');
+  } else if (directMode) {
+    updatePixivDirectStatus('直传模式已准备好；建议正式投稿前先点一次检测直传。', 'saved');
+  } else {
+    updatePixivDirectStatus('直传凭证已经就绪；如果想无浏览器投稿，把上传方式切到 Cookie + CSRF 直传 就行。', 'saved');
+  }
+
   updatePixivModeHint();
 }
 
 function updateBatchButton(running, cancelRequested = false) {
-  refs.startBatchBtn.disabled = !!running;
-  refs.stopBatchBtn.disabled = !running || !!cancelRequested;
-  refs.startBatchBtn.textContent = running ? '批量处理中...' : '开始批量处理';
-  refs.stopBatchBtn.textContent = cancelRequested ? '停止中...' : '停止处理';
+  refs.startBatchBtn.textContent = running ? '\u6279\u91cf\u5904\u7406\u4e2d...' : '\u5f00\u59cb\u6279\u91cf\u5904\u7406';
+  refs.stopBatchBtn.textContent = cancelRequested ? '\u505c\u6b62\u4e2d...' : '\u505c\u6b62\u5904\u7406';
 }
 
 function applyBatchSnapshot(snapshot, options = {}) {
@@ -1603,14 +2369,24 @@ function applyBatchSnapshot(snapshot, options = {}) {
   const cancelRequested = !!safe.cancelRequested;
   const percent = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
 
-  refs.batchStatusText.textContent = safe.status || '未开始';
+  refs.batchStatusText.textContent = safe.status || '\u672a\u5f00\u59cb';
   refs.batchProgressLabel.textContent = `${processed} / ${total}`;
   refs.batchProgressFill.style.width = `${percent}%`;
-  refs.batchCurrentFile.textContent = safe.currentFile || (running ? (cancelRequested ? '停止请求已发送，等待当前图片完成' : '正在等待下一张图片') : '等待任务开始；停止会在当前图片完成后生效');
-  refs.batchSummary.textContent = `成功 ${successes} · 错误 ${errors}`;
+  refs.batchCurrentFile.textContent = safe.currentFile || (running ? (cancelRequested ? '\u505c\u6b62\u8bf7\u6c42\u5df2\u53d1\u9001\uff0c\u7b49\u5f85\u5f53\u524d\u56fe\u7247\u5b8c\u6210' : '\u6b63\u5728\u7b49\u5f85\u4e0b\u4e00\u5f20\u56fe\u7247') : '\u7b49\u5f85\u4efb\u52a1\u5f00\u59cb\uff1b\u505c\u6b62\u4f1a\u5728\u5f53\u524d\u56fe\u7247\u5b8c\u6210\u540e\u751f\u6548');
+  refs.batchSummary.textContent = `\u6210\u529f ${successes} \u00b7 \u9519\u8bef ${errors}`;
 
   state.batch.jobId = Number(safe.jobId || 0);
   state.batch.nextOffset = Number(safe.nextOffset || 0);
+  state.batch.running = running;
+  state.batch.completed = completed;
+  state.batch.cancelRequested = cancelRequested;
+  state.batch.retryMode = !!safe.retryMode;
+  state.batch.status = String(safe.status || '');
+  state.batch.currentFile = String(safe.currentFile || '');
+  state.batch.inputDir = String(safe.inputDir || '');
+  state.batch.outputDir = String(safe.outputDir || '');
+  state.batch.lastError = String(safe.lastError || '');
+  state.batch.failedFiles = Array.isArray(safe.failedFiles) ? safe.failedFiles : [];
 
   if (options.pushLogs !== false) {
     (safe.logs || []).forEach(pushLog);
@@ -1618,12 +2394,13 @@ function applyBatchSnapshot(snapshot, options = {}) {
 
   renderBatchRecovery(safe);
   updateBatchButton(running, cancelRequested);
+  refreshExperienceUi();
   if (running) {
-    updateStatusBadge(`状态: ${safe.status || '批量处理中'}`);
+    updateStatusBadge(`\u72b6\u6001: ${safe.status || '\u6279\u91cf\u5904\u7406\u4e2d'}`);
     startBatchPolling();
   } else {
     if (completed || state.batch.jobId) {
-      updateStatusBadge(`状态: ${safe.status || '批量处理已结束'}`);
+      updateStatusBadge(`\u72b6\u6001: ${safe.status || '\u6279\u91cf\u5904\u7406\u5df2\u7ed3\u675f'}`);
     }
     stopBatchPolling();
   }
@@ -1659,22 +2436,26 @@ function applyPixivCurrentSnapshot(snapshot, options = {}) {
   state.pixivCurrent.completed = completed;
   state.pixivCurrent.failed = failed;
   state.pixivCurrent.draftReady = draftReady;
+  state.pixivCurrent.status = String(safe.status || '');
+  state.pixivCurrent.message = String(safe.message || '');
+  state.pixivCurrent.currentFile = String(safe.currentFile || '');
 
   if (options.pushLogs !== false) {
     (safe.logs || []).forEach(pushLog);
   }
 
   syncPixivFieldState();
+  refreshExperienceUi();
 
   if (running) {
-    updateStatusBadge(`状态: ${safe.status || '当前图片的 Pixiv 任务进行中'}`);
+    updateStatusBadge(`\u72b6\u6001: ${safe.status || '\u5f53\u524d\u56fe\u7247\u7684 Pixiv \u4efb\u52a1\u8fdb\u884c\u4e2d'}`);
     startPixivCurrentPolling();
     return;
   }
 
   stopPixivCurrentPolling();
   if (completed || state.pixivCurrent.jobId) {
-    updateStatusBadge(`状态: ${safe.status || (failed ? '当前图片的 Pixiv 流程失败' : '当前图片的 Pixiv 流程已完成')}`);
+    updateStatusBadge(`\u72b6\u6001: ${safe.status || (failed ? '\u5f53\u524d\u56fe\u7247\u7684 Pixiv \u6d41\u7a0b\u5931\u8d25' : '\u5f53\u524d\u56fe\u7247\u7684 Pixiv \u6d41\u7a0b\u5df2\u5b8c\u6210')}`);
   }
 }
 
@@ -1704,13 +2485,13 @@ async function pollPixivCurrentStatus() {
   try {
     const result = await window.pywebview.api.poll_pixiv_upload_current(state.pixivCurrent.nextOffset || 0);
     if (!result.ok) {
-      throw new Error(result.error || '轮询当前图片 Pixiv 任务失败');
+      throw new Error(result.error || '杞当前图片 Pixiv 任务失败');
     }
     applyPixivCurrentSnapshot(result);
   } catch (error) {
     stopPixivCurrentPolling();
     pushLog(`当前图片 Pixiv 任务轮询失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('状态: 当前图片 Pixiv 任务轮询失败');
+    updateStatusBadge('鐘舵€? 当前图片 Pixiv 任务轮询失败');
   } finally {
     state.pixivCurrent.polling = false;
   }
@@ -1731,7 +2512,7 @@ async function pollBatchStatus() {
     applyBatchSnapshot(result);
   } catch (error) {
     stopBatchPolling();
-    pushLog(`批量状态轮询失败: ${error && error.message ? error.message : error}`);
+    pushLog(`鎵归噺鐘舵€佽疆璇㈠け璐? ${error && error.message ? error.message : error}`);
     updateStatusBadge('状态: 批量状态轮询失败');
   } finally {
     state.batch.polling = false;
@@ -1740,28 +2521,30 @@ async function pollBatchStatus() {
 
 function updateSource(payload) {
   state.source = payload;
-  updateQuickStartGuide();
+  state.ui.lastExportedPath = '';
   refs.currentFile.textContent = payload.fileName;
   refs.currentFile.title = payload.path || payload.fileName;
-  refs.sourceMeta.textContent = `${payload.fileName} · ${payload.width} x ${payload.height}`;
-  refs.badgeSourceSize.textContent = `源图: ${payload.width} x ${payload.height}`;
+  refs.sourceMeta.textContent = `${payload.fileName} - ${payload.width} x ${payload.height}`;
+  refs.badgeSourceSize.textContent = `\u6e90\u56fe: ${payload.width} x ${payload.height}`;
   refs.sourceImage.src = payload.src;
   refs.sourceImage.onload = () => {
     refs.sourceStage.classList.add('active');
     refs.sourceEmpty.classList.add('hidden');
     renderRegions();
   };
+  refreshExperienceUi();
 }
 
 function updatePreview(payload) {
   state.preview = payload;
-  refs.resultMeta.textContent = `${payload.fileName} · ${payload.width} x ${payload.height}`;
-  refs.badgePreviewSize.textContent = `结果: ${payload.width} x ${payload.height}`;
+  refs.resultMeta.textContent = `${payload.fileName} - ${payload.width} x ${payload.height}`;
+  refs.badgePreviewSize.textContent = `\u7ed3\u679c: ${payload.width} x ${payload.height}`;
   refs.resultImage.src = payload.src;
   refs.resultImage.onload = () => {
     refs.resultStage.classList.add('active');
     refs.resultEmpty.classList.add('hidden');
   };
+  refreshExperienceUi();
 }
 
 function buildSettings() {
@@ -1876,7 +2659,7 @@ function setDragSelection(x1, y1, x2, y2, metrics) {
 function renderRegionChips() {
   refs.regionList.innerHTML = '';
   if (!state.regions.length) {
-    refs.regionList.innerHTML = '<span class="hint">还没有选区，直接在源图上拖一块出来就行。</span>';
+    refs.regionList.innerHTML = '<span class="hint">杩樻病鏈夐€夊尯锛岀洿鎺ュ湪婧愬浘涓婃嫋涓€鍧楀嚭鏉ュ氨琛屻€</span>';
   } else {
     state.regions.forEach((region, index) => {
       const chip = document.createElement('div');
@@ -1885,7 +2668,7 @@ function renderRegionChips() {
 
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = '×';
+      button.textContent = '脳';
       button.addEventListener('click', () => {
         state.regions.splice(index, 1);
         renderRegionChips();
@@ -1897,6 +2680,7 @@ function renderRegionChips() {
     });
   }
   updateRegionBadge();
+  refreshExperienceUi();
 }
 
 function renderRegions() {
@@ -1960,26 +2744,26 @@ function rectToImageRegion(start, end, metrics) {
 
 function undoLastRegion() {
   if (!state.regions.length) {
-    updateStatusBadge('状态: 没有可撤销的选区');
+    updateStatusBadge('鐘舵€? 娌℃湁鍙挙閿€鐨勯€夊尯');
     return;
   }
   const removed = state.regions.pop();
   renderRegionChips();
   renderRegions();
-  updateStatusBadge('状态: 已撤销上一个选区');
+  updateStatusBadge('鐘舵€? 宸叉挙閿€涓婁竴涓€夊尯');
   pushLog(`撤销选区: (${removed.join(', ')})`);
 }
 
 function clearRegions() {
   if (!state.regions.length) {
-    updateStatusBadge('状态: 当前没有选区');
+    updateStatusBadge('鐘舵€? 当前没有选区');
     return;
   }
   state.regions = [];
   renderRegionChips();
   renderRegions();
   updateStatusBadge('状态: 选区已清空');
-  pushLog('已清空全部选区');
+  pushLog('宸叉竻绌哄叏閮ㄩ€夊尯');
 }
 
 function onWorkspaceKeyDown(event) {
@@ -2066,7 +2850,7 @@ async function onWorkspaceDrop(event) {
   const imageFile = files.find((file) => isSupportedImagePath(file.path || file.name));
   if (!imageFile) {
     pushLog('拖入的文件不是受支持的图片格式');
-    updateStatusBadge('状态: 拖拽文件不受支持');
+    updateStatusBadge('鐘舵€? 拖拽文件不受支持');
     return;
   }
 
@@ -2167,7 +2951,7 @@ function logMatchesFilter(entry, filter) {
     return /错误|失败|error:|warning:|traceback/i.test(message);
   }
   if (filter === 'task') {
-    return /开始处理|处理完成|水印完成|打码完成|超分完成|批量|当前图片|导出|预览|已加载|载入/i.test(message);
+    return /寮€濮嬪理|处理完成|水印完成|打码完成|超分完成|批量|当前图片|导出|预览|已加载|载入/i.test(message);
   }
   return true;
 }
@@ -2251,3 +3035,10 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
 }
+
+
+
+
+
+
+

@@ -1,13 +1,17 @@
 import importlib.util
 import json
 import mimetypes
+import os
 import re
+import shutil
+import sqlite3
+import tempfile
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
@@ -18,6 +22,17 @@ PIXIV_AGE_OPTIONS = ["all", "R-18", "R-18G"]
 PIXIV_UPLOAD_MODE_OPTIONS = [
     {"value": "browser", "label": "浏览器自动填写"},
     {"value": "direct", "label": "Cookie + CSRF 直传"},
+]
+PIXIV_BROWSER_USER_DATA_DIRS = {
+    "msedge": Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Edge" / "User Data",
+    "chrome": Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data",
+    "chromium": Path(os.environ.get("LOCALAPPDATA", "")) / "Chromium" / "User Data",
+}
+PIXIV_DIRECT_TOKEN_PATTERNS = [
+    re.compile(r"""g_csrfToken\s*=\s*["'](?P<token>[^"']+)""", re.IGNORECASE),
+    re.compile(r""""csrfToken"\s*:\s*"(?P<token>[^"]+)""", re.IGNORECASE),
+    re.compile(r""""token"\s*:\s*"(?P<token>[^"]+)""", re.IGNORECASE),
+    re.compile(r"""name=["']csrf-token["']\s+content=["'](?P<token>[^"']+)""", re.IGNORECASE),
 ]
 
 
@@ -37,6 +52,390 @@ class _BasePixivUploader:
 
     def capture_debug_snapshot(self, tag_hint: str = "") -> dict:
         raise RuntimeError("当前 Pixiv 上传模式不支持调试快照。")
+
+
+def _browser_label(browser_channel: str) -> str:
+    mapping = {
+        "msedge": "Microsoft Edge",
+        "chrome": "Google Chrome",
+        "chromium": "Chromium",
+    }
+    key = str(browser_channel or "msedge").strip().lower()
+    return mapping.get(key, key or "浏览器")
+
+
+def _resolve_browser_user_data_dir(browser_channel: str) -> Path:
+    channel = str(browser_channel or "msedge").strip().lower()
+    path = PIXIV_BROWSER_USER_DATA_DIRS.get(channel)
+    if path is None or not str(path):
+        raise RuntimeError(f"暂不支持从 {browser_channel} 导入 Pixiv 登录态")
+    return path
+
+
+def _browser_profile_candidates(user_data_dir: Path) -> List[str]:
+    local_state_path = user_data_dir / "Local State"
+    names: List[str] = []
+    try:
+        payload = json.loads(local_state_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+
+    profile_section = payload.get("profile", {}) if isinstance(payload, dict) else {}
+    last_used = str(profile_section.get("last_used") or "").strip()
+    if last_used:
+        names.append(last_used)
+
+    info_cache = profile_section.get("info_cache", {})
+    if isinstance(info_cache, dict):
+        for raw_name in info_cache.keys():
+            name = str(raw_name or "").strip()
+            if name and name not in names:
+                names.append(name)
+
+    for candidate in sorted(user_data_dir.glob("Profile *")):
+        if candidate.is_dir() and candidate.name not in names:
+            names.append(candidate.name)
+
+    for fixed in ("Default",):
+        fixed_path = user_data_dir / fixed
+        if fixed_path.is_dir() and fixed not in names:
+            names.insert(0, fixed)
+
+    return names
+
+
+def _cookie_db_candidates(user_data_dir: Path, profile_name: str) -> List[Path]:
+    profile_dir = user_data_dir / profile_name
+    return [
+        profile_dir / "Network" / "Cookies",
+        profile_dir / "Cookies",
+    ]
+
+
+def _snapshot_sqlite_database(source: Path, target: Path) -> None:
+    source_uri = f"{source.resolve().as_uri()}?mode=ro"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    source_conn = sqlite3.connect(source_uri, uri=True)
+    target_conn = sqlite3.connect(str(target))
+    try:
+        source_conn.backup(target_conn)
+        target_conn.commit()
+    finally:
+        target_conn.close()
+        source_conn.close()
+
+
+def _copy_regular_auth_file(source: Path, target: Path, *, required: bool = False) -> None:
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    except FileNotFoundError:
+        if required:
+            raise
+    except OSError:
+        if required:
+            raise
+
+
+def _copy_browser_auth_files(user_data_dir: Path, profile_name: str, destination_root: Path) -> None:
+    destination_root.mkdir(parents=True, exist_ok=True)
+    local_state = user_data_dir / "Local State"
+    if local_state.exists():
+        _copy_regular_auth_file(local_state, destination_root / "Local State", required=True)
+
+    source_profile = user_data_dir / profile_name
+    target_profile = destination_root / profile_name
+    (target_profile / "Network").mkdir(parents=True, exist_ok=True)
+
+    for relative in (
+        Path("Preferences"),
+        Path("Secure Preferences"),
+    ):
+        source = source_profile / relative
+        if not source.exists():
+            continue
+        target = target_profile / relative
+        _copy_regular_auth_file(source, target)
+
+    cookie_snapshot_errors: List[str] = []
+    cookie_snapshot_done = False
+    for source in _cookie_db_candidates(user_data_dir, profile_name):
+        if not source.exists():
+            continue
+        target = destination_root / profile_name / source.relative_to(source_profile)
+        try:
+            _snapshot_sqlite_database(source, target)
+            cookie_snapshot_done = True
+        except Exception as exc:
+            cookie_snapshot_errors.append(f"{source.name}: {exc}")
+
+    if not cookie_snapshot_done:
+        if cookie_snapshot_errors:
+            raise RuntimeError("无法生成浏览器 Cookie 快照: " + "；".join(cookie_snapshot_errors))
+        raise FileNotFoundError(f"没有找到 {profile_name} 的 Cookie 数据库")
+
+
+def _pixiv_cookie_domain_matches(domain: str, host: str = "www.pixiv.net") -> bool:
+    raw = str(domain or "").strip().lower()
+    request_host = str(host or "www.pixiv.net").strip().lower()
+    if not raw:
+        return False
+    if raw.startswith("."):
+        raw = raw[1:]
+    return request_host == raw or request_host.endswith(f".{raw}")
+
+
+def _build_pixiv_cookie_header(cookies: Iterable[dict], host: str = "www.pixiv.net") -> str:
+    selected: Dict[str, str] = {}
+    for item in cookies:
+        if not isinstance(item, dict):
+            continue
+        domain = str(item.get("domain") or "").strip()
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "")
+        if not name or not _pixiv_cookie_domain_matches(domain, host=host):
+            continue
+        selected[name] = value
+    return "; ".join(f"{name}={value}" for name, value in sorted(selected.items()))
+
+
+def _extract_pixiv_csrf_token(html: str) -> str:
+    source = str(html or "")
+    for pattern in PIXIV_DIRECT_TOKEN_PATTERNS:
+        match = pattern.search(source)
+        if match:
+            token = str(match.group("token") or "").strip()
+            if token:
+                return token
+    return ""
+
+
+def _is_pixiv_login_html(html: str, url: str = "") -> bool:
+    page_url = str(url or "").strip().lower()
+    page_html = str(html or "").lower()
+    if "accounts.pixiv.net/login" in page_url:
+        return True
+
+    has_password_input = (
+        'type="password"' in page_html
+        or "type='password'" in page_html
+        or 'autocomplete="current-password"' in page_html
+        or "autocomplete='current-password'" in page_html
+    )
+    has_login_form = (
+        ('name="pixiv_id"' in page_html or "name='pixiv_id'" in page_html)
+        or ('autocomplete="username"' in page_html or "autocomplete='username'" in page_html)
+        or ('form' in page_html and 'action="https://accounts.pixiv.net/login"' in page_html)
+        or ("form" in page_html and "action='https://accounts.pixiv.net/login'" in page_html)
+    )
+    return has_password_input and has_login_form
+
+
+def _looks_like_cookie_access_block(error_text: str) -> bool:
+    text = str(error_text or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        needle in text
+        for needle in (
+            "unable to open database file",
+            "permission denied",
+            "access is denied",
+            "being used by another process",
+            "file is locked or in use",
+            "winerror 32",
+        )
+    )
+
+
+def _should_fallback_to_interactive_browser_auth(errors: List[str]) -> bool:
+    return any(_looks_like_cookie_access_block(message) for message in (errors or []))
+
+
+def _looks_like_transient_page_state_error(error_text: str) -> bool:
+    text = str(error_text or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        needle in text
+        for needle in (
+            "page.content",
+            "page.evaluate",
+            "page.goto",
+            "unable to retrieve content because the page is navigating",
+            "execution context was destroyed",
+            "most likely because of a navigation",
+            "navigation interrupted by another one",
+            "timeout",
+            "exceeded",
+        )
+    )
+
+
+def _read_pixiv_auth_from_page(context, page) -> dict:
+    deadline = time.time() + 15.0
+    last_exc = None
+    while time.time() < deadline:
+        try:
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception as exc:
+                if not _looks_like_transient_page_state_error(exc):
+                    raise
+
+            final_url = page.url
+            cookies = context.cookies(["https://www.pixiv.net/", _BrowserPixivUploader.UPLOAD_URL])
+            cookie_header = _build_pixiv_cookie_header(cookies)
+            html = ""
+            try:
+                html = page.content()
+            except Exception as exc:
+                if not _looks_like_transient_page_state_error(exc):
+                    raise
+                if cookie_header and (
+                    "pixiv.net/upload.php" in final_url
+                    or "pixiv.net/illustration/create" in final_url
+                ):
+                    return {
+                        "html": "",
+                        "url": final_url,
+                        "loginRequired": False,
+                        "cookie": cookie_header,
+                        "csrfToken": "",
+                    }
+                raise
+            login_required = _is_pixiv_login_html(html, final_url)
+            csrf_token = ""
+            if not login_required:
+                try:
+                    csrf_token = page.evaluate(
+                        """() => {
+                            const asText = (value) => (typeof value === 'string' ? value.trim() : '');
+                            if (asText(window.g_csrfToken)) return asText(window.g_csrfToken);
+                            const meta =
+                                document.querySelector('meta[name="csrf-token"]') ||
+                                document.querySelector('meta[name="global-data"]');
+                            if (meta && asText(meta.content)) return asText(meta.content);
+                            for (const script of Array.from(document.scripts || [])) {
+                                const text = script.textContent || '';
+                                const patterns = [
+                                    /g_csrfToken\\s*=\\s*["']([^"']+)/i,
+                                    /"csrfToken"\\s*:\\s*"([^"]+)/i,
+                                    /"token"\\s*:\\s*"([^"]+)/i,
+                                ];
+                                for (const pattern of patterns) {
+                                    const match = text.match(pattern);
+                                    if (match && asText(match[1])) return asText(match[1]);
+                                }
+                            }
+                            return '';
+                        }"""
+                    )
+                except Exception as exc:
+                    if not _looks_like_transient_page_state_error(exc):
+                        raise
+                    csrf_token = ""
+                if not csrf_token:
+                    csrf_token = _extract_pixiv_csrf_token(html)
+            return {
+                "html": html,
+                "url": final_url,
+                "loginRequired": login_required,
+                "cookie": cookie_header,
+                "csrfToken": csrf_token,
+            }
+        except Exception as exc:
+            if not _looks_like_transient_page_state_error(exc):
+                raise
+            last_exc = exc
+            page.wait_for_timeout(350)
+
+    if last_exc is not None:
+        raise RuntimeError(f"Pixiv 页面仍在跳转，请稍候再试：{last_exc}")
+    raise RuntimeError("Pixiv 页面未能及时稳定")
+
+
+def _build_pixiv_import_result(
+    *,
+    browser_channel: str,
+    browser_name: str,
+    profile_name: str,
+    cookie_header: str,
+    csrf_token: str,
+    source: str,
+) -> dict:
+    message = f"已从 {browser_name} 的 {profile_name} 导入 Pixiv 登录态"
+    if not csrf_token:
+        message += "，但还没有拿到 CSRF Token"
+    return {
+        "browserChannel": browser_channel,
+        "browserLabel": browser_name,
+        "profileName": profile_name,
+        "cookie": cookie_header,
+        "csrfToken": csrf_token,
+        "cookieCount": max(1, cookie_header.count(";") + 1),
+        "source": source,
+        "needsCsrfProbe": not bool(csrf_token),
+        "message": message,
+    }
+
+
+def _interactive_pixiv_browser_auth(playwright, browser_channel: str, browser_name: str, log_fn: Callable[[str], None]) -> dict:
+    log = log_fn or (lambda message: None)
+    with tempfile.TemporaryDirectory(prefix="pixiv_auth_interactive_") as temp_dir_name:
+        temp_root = Path(temp_dir_name)
+        launch_kwargs = {
+            "user_data_dir": str(temp_root),
+            "headless": False,
+        }
+        if browser_channel != "chromium":
+            launch_kwargs["channel"] = browser_channel
+
+        context = None
+        try:
+            context = playwright.chromium.launch_persistent_context(**launch_kwargs)
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(_BrowserPixivUploader.UPLOAD_URL, wait_until="domcontentloaded", timeout=45000)
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+
+            log(f"[Pixiv] {browser_name} 的 Cookie 数据库当前被占用，已改为临时登录窗口导入。")
+            log("[Pixiv] 请在弹出的浏览器窗口里登录 Pixiv；登录完成后会自动抓取 Cookie 和 CSRF。")
+
+            deadline = time.time() + 300
+            while time.time() < deadline:
+                snapshot = _read_pixiv_auth_from_page(context, page)
+                if (
+                    not snapshot["loginRequired"]
+                    and snapshot["cookie"]
+                ):
+                    cookie_header = snapshot["cookie"]
+                    csrf_token = snapshot["csrfToken"]
+                    if csrf_token:
+                        log(f"[Pixiv] 已通过 {browser_name} 临时登录窗口导入 Pixiv 登录态。")
+                    else:
+                        log(f"[Pixiv] 已通过 {browser_name} 临时登录窗口拿到 Pixiv Cookie，但还没有抓到 CSRF Token。")
+                    return _build_pixiv_import_result(
+                        browser_channel=browser_channel,
+                        browser_name=browser_name,
+                        profile_name="interactive-login",
+                        cookie_header=cookie_header,
+                        csrf_token=csrf_token,
+                        source="interactive-login",
+                    )
+                page.wait_for_timeout(1000)
+
+            raise RuntimeError("等待 Pixiv 登录超时；请在弹出的浏览器窗口里完成登录后重试")
+        finally:
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
 
 
 class _BrowserPixivUploader(_BasePixivUploader):
@@ -1622,6 +2021,94 @@ class _BrowserPixivUploader(_BasePixivUploader):
             self._log(f"[Pixiv] 已填好投稿表单，请检查后手动投稿: {image_path.name}")
 
 
+def import_pixiv_browser_auth(settings: dict, log_fn: Optional[Callable[[str], None]] = None) -> dict:
+    log = log_fn or (lambda message: None)
+    browser_channel = str(settings.get("browser_channel") or "msedge").strip().lower()
+    user_data_dir = _resolve_browser_user_data_dir(browser_channel)
+    browser_name = _browser_label(browser_channel)
+
+    if not user_data_dir.exists():
+        raise RuntimeError(f"找不到 {browser_name} 的用户资料目录：{user_data_dir}")
+
+    profiles = _browser_profile_candidates(user_data_dir)
+    if not profiles:
+        raise RuntimeError(f"在 {browser_name} 的用户资料目录里没有找到可读取的配置")
+
+    if importlib.util.find_spec("playwright") is None:
+        log("[Pixiv] 正在安装 Playwright，用于从浏览器静默导入登录态...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "playwright"])
+
+    from playwright.sync_api import sync_playwright
+
+    errors: List[str] = []
+    with sync_playwright() as playwright:
+        for profile_name in profiles:
+            cookie_sources = [path for path in _cookie_db_candidates(user_data_dir, profile_name) if path.exists()]
+            if not cookie_sources:
+                continue
+
+            log(f"[Pixiv] 正在尝试读取 {browser_name} 配置：{profile_name}")
+            with tempfile.TemporaryDirectory(prefix="pixiv_auth_import_") as temp_dir_name:
+                temp_root = Path(temp_dir_name)
+                try:
+                    _copy_browser_auth_files(user_data_dir, profile_name, temp_root)
+                except Exception as exc:
+                    errors.append(f"{profile_name}: 无法复制浏览器配置 ({exc})")
+                    continue
+
+                launch_kwargs = {
+                    "user_data_dir": str(temp_root),
+                    "headless": True,
+                }
+                if browser_channel != "chromium":
+                    launch_kwargs["channel"] = browser_channel
+                if profile_name != "Default":
+                    launch_kwargs["args"] = [f"--profile-directory={profile_name}"]
+
+                context = None
+                try:
+                    context = playwright.chromium.launch_persistent_context(**launch_kwargs)
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(_BrowserPixivUploader.UPLOAD_URL, wait_until="domcontentloaded", timeout=45000)
+                    snapshot = _read_pixiv_auth_from_page(context, page)
+                    if snapshot["loginRequired"]:
+                        errors.append(f"{profile_name}: Pixiv 登录态已失效")
+                        continue
+
+                    cookie_header = snapshot["cookie"]
+                    if not cookie_header:
+                        errors.append(f"{profile_name}: 没有读取到 Pixiv 登录 Cookie")
+                        continue
+
+                    csrf_token = snapshot["csrfToken"]
+                    if csrf_token:
+                        log(f"[Pixiv] 已从 {browser_name} 配置 {profile_name} 导入 Pixiv 登录态。")
+                    else:
+                        log(f"[Pixiv] 已从 {browser_name} 配置 {profile_name} 导入 Pixiv Cookie，但还没有拿到 CSRF Token。")
+                    return _build_pixiv_import_result(
+                        browser_channel=browser_channel,
+                        browser_name=browser_name,
+                        profile_name=profile_name,
+                        cookie_header=cookie_header,
+                        csrf_token=csrf_token,
+                        source="browser-profile",
+                    )
+                except Exception as exc:
+                    errors.append(f"{profile_name}: {exc}")
+                finally:
+                    if context is not None:
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+
+        if _should_fallback_to_interactive_browser_auth(errors):
+            return _interactive_pixiv_browser_auth(playwright, browser_channel, browser_name, log)
+
+    detail = "；".join(errors[-3:]) if errors else "没有找到可用的 Pixiv 登录态"
+    raise RuntimeError(f"无法从 {browser_name} 导入 Pixiv 登录态：{detail}")
+
+
 class _DirectPixivUploader(_BasePixivUploader):
     CREATE_URL = "https://www.pixiv.net/ajax/work/create/illustration"
     PROGRESS_URL = "https://www.pixiv.net/ajax/work/create/illustration/progress"
@@ -1634,16 +2121,7 @@ class _DirectPixivUploader(_BasePixivUploader):
     def __init__(self, settings: dict, log_fn: Optional[Callable[[str], None]] = None):
         super().__init__(settings, log_fn=log_fn)
         self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "accept": "application/json, text/plain, */*",
-                "origin": "https://www.pixiv.net",
-                "referer": self.UPLOAD_URL,
-                "user-agent": self.USER_AGENT,
-                "x-csrf-token": self._csrf_token(),
-                "cookie": self._cookie(),
-            }
-        )
+        self._refresh_session_headers()
 
     def _cookie(self) -> str:
         return str(self.settings.get("cookie") or "").strip()
@@ -1651,10 +2129,24 @@ class _DirectPixivUploader(_BasePixivUploader):
     def _csrf_token(self) -> str:
         return str(self.settings.get("csrf_token") or "").strip()
 
-    def ensure_ready(self) -> bool:
+    def _refresh_session_headers(self) -> None:
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "origin": "https://www.pixiv.net",
+            "referer": self.UPLOAD_URL,
+            "user-agent": self.USER_AGENT,
+            "cookie": self._cookie(),
+        }
+        csrf_token = self._csrf_token()
+        if csrf_token:
+            headers["x-csrf-token"] = csrf_token
+        self.session.headers.clear()
+        self.session.headers.update(headers)
+
+    def ensure_ready(self, *, require_csrf: bool = True) -> bool:
         if not self._cookie():
             raise RuntimeError("Pixiv 直传模式缺少 Cookie")
-        if not self._csrf_token():
+        if require_csrf and not self._csrf_token():
             raise RuntimeError("Pixiv 直传模式缺少 CSRF Token")
         return True
 
@@ -1743,6 +2235,29 @@ class _DirectPixivUploader(_BasePixivUploader):
                 return str(payload["body"]["message"])
         return response.text.strip() or f"HTTP {response.status_code}"
 
+    def probe(self) -> dict:
+        self.ensure_ready(require_csrf=False)
+        self._refresh_session_headers()
+        response = self.session.get(self.UPLOAD_URL, timeout=30)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Pixiv 直传检测失败：{self._extract_error_message(response)}")
+
+        final_url = str(response.url or self.UPLOAD_URL)
+        html = response.text or ""
+        if _is_pixiv_login_html(html, final_url):
+            raise RuntimeError("Pixiv 登录态已失效，请重新导入 Cookie")
+
+        csrf_token = _extract_pixiv_csrf_token(html) or self._csrf_token()
+        if not csrf_token:
+            raise RuntimeError("已访问 Pixiv 投稿页，但没有找到可用的 CSRF Token")
+
+        return {
+            "ok": True,
+            "url": final_url,
+            "csrfToken": csrf_token,
+            "message": "Pixiv 直传鉴权可用",
+        }
+
     def _poll_progress(self, convert_key: str, timeout_seconds: int = 180) -> str:
         deadline = time.time() + timeout_seconds
         last_state = ""
@@ -1830,6 +2345,16 @@ class _DirectPixivUploader(_BasePixivUploader):
             illust_id = self._poll_progress(convert_key)
 
         self._log(f"[Pixiv] 直传完成，作品 ID: {illust_id}")
+
+
+def probe_pixiv_direct_auth(settings: dict, log_fn: Optional[Callable[[str], None]] = None) -> dict:
+    uploader = _DirectPixivUploader(settings, log_fn=log_fn)
+    try:
+        result = uploader.probe()
+        uploader._log(f"[Pixiv] {result['message']}: {result['url']}")
+        return result
+    finally:
+        uploader.close()
 
 
 class PixivUploader:

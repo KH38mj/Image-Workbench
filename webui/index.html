@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -48,16 +48,17 @@
           <section class="panel compact guide-card" id="quickStartGuide">
             <div class="panel-head">
               <div>
-                <span class="panel-kicker">Guide</span>
-                <h2>第一次使用</h2>
+                <span class="panel-kicker">Workflow</span>
+                <h2 id="quickGuideTitle">先选一张图</h2>
               </div>
             </div>
-            <div class="guide-steps">
-              <div class="guide-step"><strong>1. 先选图</strong><span>从本地选择一张图，或直接拖进右侧工作台。</span></div>
-              <div class="guide-step"><strong>2. 再调参</strong><span>在编辑页调整水印、打码、超分，先生成预览再决定导出。</span></div>
-              <div class="guide-step"><strong>3. 最后发布</strong><span>要单图 Pixiv 就用首页快捷按钮，要批量就去发布页填目录。</span></div>
+            <p class="support-copy" id="quickGuideLead"></p>
+            <div class="guide-steps" id="quickGuideSteps"></div>
+            <div class="button-row guide-actions">
+              <button id="quickGuidePrimaryBtn" class="button accent" type="button">选择图片</button>
+              <button id="quickGuideSecondaryBtn" class="button ghost hidden" type="button">去编辑页</button>
             </div>
-            <p class="support-copy">第一次不需要一口气全部配好，先跑通一张图最稳喔。</p>
+            <p class="support-copy field-note" id="quickGuideHint"></p>
           </section>
 
           <section class="panel compact">
@@ -75,7 +76,7 @@
             <div class="button-row">
               <button id="quickPixivUploadBtn" class="button solid">单图一键草稿</button>
             </div>
-            <p class="support-copy">会对当前工作区里这张图执行处理流程，并按 Pixiv 设置继续投稿，不需要批量目录。</p>
+            <p class="support-copy" id="quickActionHint">会对当前工作区里这张图执行处理流程，并按 Pixiv 设置继续投稿，不需要批量目录。</p>
             <div class="shortcut-strip">
               <span class="shortcut-chip"><kbd>Ctrl</kbd><kbd>O</kbd> 选图</span>
               <span class="shortcut-chip"><kbd>Ctrl</kbd><kbd>Enter</kbd> 预览</span>
@@ -120,7 +121,7 @@
               <div class="field full field-note">
                 <span>字体小样</span>
                 <div class="font-sample-card" id="fontSampleCard">
-                  <p class="font-sample-text" id="wmFontSample">YourName · 水印预览 2026</p>
+                  <p class="font-sample-text" id="wmFontSample">YourName 路 水印预览 2026</p>
                 </div>
               </div>
               <label class="field">
@@ -160,7 +161,7 @@
                     </div>
                   </label>
                 </div>
-                <p class="support-copy font-catalog-status" id="fontCatalogStatus">在线字体源：Google Fonts（需 API key）</p>
+                <p class="support-copy font-catalog-status" id="fontCatalogStatus">在线字体源：Google Fonts（需 API Key）</p>
                 <div class="field-note recent-fonts-block">
                   <span>最近下载</span>
                   <div class="recent-font-list" id="recentFontList"></div>
@@ -312,10 +313,14 @@
               <button id="openBatchOutputDirBtn" class="button ghost" type="button">打开输出目录</button>
               <button id="viewBatchErrorsBtn" class="button ghost" type="button">只看错误日志</button>
             </div>
+            <p class="support-copy field-note" id="batchActionHint"></p>
             <div class="batch-recovery-card hidden" id="batchRecoveryCard">
               <strong>批量错误摘要</strong>
               <p id="batchLastError">当前还没有批量错误。</p>
               <div class="failed-file-list" id="batchFailedFiles"></div>
+              <div class="button-row">
+                <button id="retryFailedBatchBtn" class="button accent" type="button">只重跑失败项</button>
+              </div>
             </div>
             <div class="progress-block">
               <div class="progress-meta">
@@ -327,7 +332,7 @@
               </div>
               <div class="batch-footnote">
                 <span id="batchCurrentFile">等待任务开始；停止会在当前图片完成后生效</span>
-                <span id="batchSummary">成功 0 · 错误 0</span>
+                <span id="batchSummary">成功 0 路 错误 0</span>
               </div>
             </div>
           </section>
@@ -384,76 +389,84 @@
                   <summary>高级设置</summary>
                   <div class="fold-content">
                     <div class="field-grid">
-              <label class="field full">
-                <span>浏览器资料目录</span>
-                <div class="inline-grid wide">
-                  <input type="text" id="pixivProfileDir" placeholder="保存 Pixiv 登录状态的目录">
-                  <button id="browsePixivProfileBtn" class="button ghost" type="button">浏览</button>
-                </div>
-              </label>
-              <label class="field full">
-                <span>Cookie</span>
-                <textarea id="pixivCookie" rows="3" placeholder="仅在 Cookie + CSRF 直传模式下使用；请粘贴完整 Pixiv Cookie"></textarea>
-              </label>
-              <label class="field full">
-                <span>CSRF Token</span>
-                <input type="text" id="pixivCsrfToken" placeholder="仅在 Cookie + CSRF 直传模式下使用">
-              </label>
-              <label class="field full">
-                <span>LLM 接口地址</span>
-                <input type="text" id="pixivLlmBaseUrl" placeholder="例如 https://api.openai.com/v1 或你的 OpenAI-compatible 地址">
-              </label>
-              <label class="field full">
-                <span>LLM API Key</span>
-                <div class="inline-grid wide">
-                  <input type="password" id="pixivLlmApiKey" placeholder="留空表示不带 Authorization 头">
-                  <button id="testPixivLlmBtn" class="button ghost" type="button">测试 LLM</button>
-                </div>
-              </label>
-              <label class="field full">
-                <span>Pixiv 预览</span>
-                <div class="inline-grid wide">
-                  <button id="previewPixivBtn" class="button ghost" type="button">预览当前 Pixiv 投稿</button>
-                </div>
-              </label>
-              <label class="field full">
-                <span>Pixiv 投稿</span>
-                <div class="inline-grid wide">
-                  <button id="testPixivUploadBtn" class="button ghost" type="button">处理当前图片并打开 Pixiv 草稿</button>
-                  <button id="capturePixivDebugBtn" class="button ghost" type="button">抓取 Pixiv 调试快照</button>
-                </div>
-              </label>
-              <label class="switch card-switch field full">
-                <input type="checkbox" id="pixivRememberLlmApiKey">
-                <span>Remember API Key (Windows Credential Manager)</span>
-              </label>
-              <label class="field">
-                <span>LLM 模型</span>
-                <div class="inline-grid wide">
-                  <select id="pixivLlmModelPreset"></select>
-                  <button id="loadPixivLlmModelsBtn" class="button ghost" type="button">读取模型</button>
-                </div>
-              </label>
-              <label class="field">
-                <span>自定义模型名</span>
-                <input type="text" id="pixivLlmModelCustom" placeholder="下拉里没有时，在这里填兼容模型名">
-              </label>
-              <label class="field">
-                <span>采样温度</span>
-                <input type="number" id="pixivLlmTemperature" min="0" max="2" step="0.1" value="0.1">
-              </label>
-              <label class="field">
-                <span>超时时间</span>
-                <input type="number" id="pixivLlmTimeout" min="5" max="300" step="1" value="60">
-              </label>
-              <label class="field full">
-                <span>综合整理 Prompt</span>
-                <textarea id="pixivLlmPromptMetadata" rows="5" placeholder="可选。留空时使用内置综合整理 prompt。"></textarea>
-              </label>
-              <label class="field full">
-                <span>看图打标 Prompt</span>
-                <textarea id="pixivLlmPromptImage" rows="5" placeholder="可选。留空时使用内置看图打标 prompt。"></textarea>
-              </label>
+                      <label class="field full">
+                        <span>浏览器资料目录</span>
+                        <div class="inline-grid wide">
+                          <input type="text" id="pixivProfileDir" placeholder="保存 Pixiv 登录状态的目录">
+                          <button id="browsePixivProfileBtn" class="button ghost" type="button">浏览</button>
+                        </div>
+                      </label>
+                      <label class="field full">
+                        <span>Cookie</span>
+                        <textarea id="pixivCookie" rows="3" placeholder="仅在 Cookie + CSRF 直传模式下使用；请粘贴完整 Pixiv Cookie"></textarea>
+                      </label>
+                      <label class="field full">
+                        <span>CSRF Token</span>
+                        <input type="text" id="pixivCsrfToken" placeholder="仅在 Cookie + CSRF 直传模式下使用">
+                      </label>
+                      <label class="field full">
+                        <span>直传工具</span>
+                        <div class="inline-grid wide">
+                          <button id="importPixivAuthBtn" class="button ghost" type="button">从浏览器导入</button>
+                          <button id="testPixivDirectBtn" class="button ghost" type="button">检测直传</button>
+                        </div>
+                        <p class="support-copy field-note save-state-copy" id="pixivDirectStatus" data-state="idle">直传模式会读取当前所选浏览器里的 Pixiv 登录态，并自动补齐 CSRF Token。</p>
+                      </label>
+                      <label class="field full">
+                        <span>LLM 接口地址</span>
+                        <input type="text" id="pixivLlmBaseUrl" placeholder="例如 https://api.openai.com/v1 或你的 OpenAI-compatible 地址">
+                      </label>
+                      <label class="field full">
+                        <span>LLM API Key</span>
+                        <div class="inline-grid wide">
+                          <input type="password" id="pixivLlmApiKey" placeholder="留空表示不带 Authorization 头">
+                          <button id="testPixivLlmBtn" class="button ghost" type="button">测试 LLM</button>
+                        </div>
+                      </label>
+                      <label class="field full">
+                        <span>Pixiv 预览</span>
+                        <div class="inline-grid wide">
+                          <button id="previewPixivBtn" class="button ghost" type="button">预览当前 Pixiv 投稿</button>
+                        </div>
+                      </label>
+                      <label class="field full">
+                        <span>Pixiv 投稿</span>
+                        <div class="inline-grid wide">
+                          <button id="testPixivUploadBtn" class="button ghost" type="button">处理当前图片并打开 Pixiv 草稿</button>
+                          <button id="capturePixivDebugBtn" class="button ghost" type="button">抓取 Pixiv 调试快照</button>
+                        </div>
+                      </label>
+                      <label class="switch card-switch field full">
+                        <input type="checkbox" id="pixivRememberLlmApiKey">
+                        <span>Remember API Key (Windows Credential Manager)</span>
+                      </label>
+                      <label class="field">
+                        <span>LLM 模型</span>
+                        <div class="inline-grid wide">
+                          <select id="pixivLlmModelPreset"></select>
+                          <button id="loadPixivLlmModelsBtn" class="button ghost" type="button">读取模型</button>
+                        </div>
+                      </label>
+                      <label class="field">
+                        <span>自定义模型名</span>
+                        <input type="text" id="pixivLlmModelCustom" placeholder="下拉里没有时，在这里填兼容模型名">
+                      </label>
+                      <label class="field">
+                        <span>采样温度</span>
+                        <input type="number" id="pixivLlmTemperature" min="0" max="2" step="0.1" value="0.1">
+                      </label>
+                      <label class="field">
+                        <span>超时时间</span>
+                        <input type="number" id="pixivLlmTimeout" min="5" max="300" step="1" value="60">
+                      </label>
+                      <label class="field full">
+                        <span>综合整理 Prompt</span>
+                        <textarea id="pixivLlmPromptMetadata" rows="5" placeholder="可选。留空时使用内置综合整理 prompt。"></textarea>
+                      </label>
+                      <label class="field full">
+                        <span>看图打标 Prompt</span>
+                        <textarea id="pixivLlmPromptImage" rows="5" placeholder="可选。留空时使用内置看图打标 prompt。"></textarea>
+                      </label>
                     </div>
                   </div>
                 </details>
@@ -461,6 +474,17 @@
               <label class="field full">
                 <span>标题模板</span>
                 <input type="text" id="pixivTitleTemplate" placeholder="支持 {stem} / {name}">
+              </label>
+              <label class="field">
+                <span>标题风格预设</span>
+                <div class="inline-grid wide">
+                  <select id="pixivLlmTitleStyle"></select>
+                  <button id="resetPixivTitlePromptBtn" class="button ghost" type="button">恢复预设 Prompt</button>
+                </div>
+              </label>
+              <label class="field full">
+                <span>标题润色 Prompt</span>
+                <textarea id="pixivLlmPromptTitle" rows="4" placeholder="可选。留空时使用内置 AI 标题润色 prompt。"></textarea>
               </label>
               <label class="field full">
                 <span>手动标签</span>
@@ -475,6 +499,7 @@
               <label class="switch card-switch"><input type="checkbox" id="pixivUseMetadataTags"><span>从 metadata 提取 prompt 标签</span></label>
               <label class="switch card-switch"><input type="checkbox" id="pixivLlmEnabled"><span>启用 LLM 综合润色</span></label>
               <label class="switch card-switch"><input type="checkbox" id="pixivLlmImageEnabled"><span>启用 LLM 看图打标</span></label>
+              <label class="switch card-switch"><input type="checkbox" id="pixivLlmTitleEnabled"><span>启用 AI 标题润色</span></label>
               <label class="switch card-switch"><input type="checkbox" id="pixivIncludeLoraTags"><span>自动追加 LoRA 标签</span></label>
               <label class="switch card-switch"><input type="checkbox" id="pixivAddOriginalTag"><span>追加原创标签</span></label>
               <label class="switch card-switch"><input type="checkbox" id="pixivAiGenerated"><span>标记为 AI 生成</span></label>
@@ -484,8 +509,8 @@
               <label class="switch card-switch"><input type="checkbox" id="pixivAddScaleTag"><span>追加倍率标签</span></label>
               <label class="switch card-switch"><input type="checkbox" id="pixivLockTags"><span>不允许其他用户编辑标签</span></label>
             </div>
-            <p class="support-copy" id="pixivModeHint">自动标签会裁到 Pixiv 当前的 10 个上限。手动投稿模式下，浏览器会停在投稿页，方便你确认首张的标题、标签和说明是否符合预期。</p>
-            <p class="support-copy field-note">LLM 模型支持从提供商自动读取，也支持手动输入。先填写 Base URL 和 API Key，再点读取模型会更顺手。流程上会先做看图打标，再把看图结果和 metadata 一起交给综合整理模型。两个 Prompt 槽位留空时都会回退到内置默认 prompt。</p>
+            <p class="support-copy" id="pixivModeHint">自动标签会裁剪到 Pixiv 当前的 10 个上限。手动投稿模式下，浏览器会停在投稿页，方便你确认标题、标签和说明是否符合预期。</p>
+            <p class="support-copy field-note">LLM 模型支持从提供商自动读取，也支持手动输入。先填写 Base URL 和 API Key，再点读取模型会更顺手。流程上会先做看图打标，再把看图结果和 metadata 一起交给综合整理模型。两个 Prompt 栏位留空时都会回退到内置默认 prompt。</p>
             <p class="support-copy">Cookie / CSRF Token 和 LLM API Key 都属于敏感凭证，只建议保存在你自己的本机配置里，不要提交到 GitHub。安全策略默认会自动升到 R-18 / R-18G，并拦截高风险未成年性化组合，喵。</p>
             <p class="support-copy field-note save-state-copy" id="pixivSaveState" data-state="idle">配置改动会自动保存；敏感凭证不会落盘。</p>
           </section>

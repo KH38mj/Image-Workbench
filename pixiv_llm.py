@@ -43,6 +43,18 @@ Rules:
 6. Do not add any explanation outside the JSON object.
 """
 
+DEFAULT_PIXIV_LLM_TITLE_PROMPT = """You are helping prepare a Pixiv submission title.
+
+Rules:
+1. Return JSON only.
+2. Output schema must be {"title": "..." }.
+3. Start from the provided base_title and polish it into a natural, concise Pixiv-friendly title.
+4. Use only evidence from the provided tags, file name, and base title. Do not invent character names, series names, or unseen details.
+5. Prefer Japanese wording when the provided tags are mostly Japanese; otherwise keep the title language close to the base title.
+6. Keep the final title within 32 characters when possible.
+7. No hashtags, no explanation, no extra keys.
+"""
+
 
 def _openai_compatible_endpoint(base_url: str, *, kind: str = "chat/completions") -> str:
     base = str(base_url or "").strip().rstrip("/")
@@ -106,6 +118,7 @@ class OpenAICompatiblePixivTagger:
         timeout: int = 60,
         system_prompt: Optional[str] = None,
         vision_system_prompt: Optional[str] = None,
+        title_system_prompt: Optional[str] = None,
     ):
         self.base_url = str(base_url or "").strip()
         self.api_key = str(api_key or "").strip()
@@ -114,6 +127,7 @@ class OpenAICompatiblePixivTagger:
         self.timeout = max(5, int(timeout))
         self.system_prompt = str(system_prompt or DEFAULT_PIXIV_LLM_SYSTEM_PROMPT).strip()
         self.vision_system_prompt = str(vision_system_prompt or DEFAULT_PIXIV_LLM_VISION_PROMPT).strip()
+        self.title_system_prompt = str(title_system_prompt or DEFAULT_PIXIV_LLM_TITLE_PROMPT).strip()
 
     def is_ready(self) -> bool:
         return bool(self.base_url and self.model)
@@ -222,6 +236,15 @@ class OpenAICompatiblePixivTagger:
             if len(tags) >= limit:
                 break
         return tags
+
+    def _normalize_title(self, value: object, *, fallback: str = "") -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"\s+", " ", text)
+        if not text:
+            text = str(fallback or "").strip()
+        if len(text) > 32:
+            text = text[:32].rstrip()
+        return text
 
     def generate_tags(self, metadata_tags: List[str], image_tags: Optional[List[str]] = None, *, limit: int = 10) -> List[str]:
         if not self.is_ready():
@@ -343,3 +366,38 @@ class OpenAICompatiblePixivTagger:
             "confidence": confidence,
             "reason": reason,
         }
+
+    def generate_title(
+        self,
+        *,
+        base_title: str,
+        file_name: str,
+        metadata_tags: Optional[List[str]] = None,
+        final_tags: Optional[List[str]] = None,
+    ) -> str:
+        if not self.is_ready():
+            raise RuntimeError("LLM settings are incomplete; Base URL and Model are required")
+
+        parsed = self._request_json_response(
+            [
+                {"role": "system", "content": self.title_system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "base_title": str(base_title or "").strip(),
+                            "file_name": str(file_name or "").strip(),
+                            "metadata_tags": metadata_tags or [],
+                            "final_tags": final_tags or [],
+                            "target": "pixiv_title_polish",
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            temperature=0.2,
+        )
+        title = self._normalize_title(parsed.get("title"), fallback=base_title)
+        if not title:
+            raise RuntimeError("LLM did not return a usable title")
+        return title

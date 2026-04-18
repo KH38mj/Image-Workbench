@@ -63,6 +63,8 @@ from pixiv_uploader import (
     PIXIV_UPLOAD_MODE_OPTIONS,
     PIXIV_VISIBILITY_OPTIONS,
     PixivUploader,
+    import_pixiv_browser_auth,
+    probe_pixiv_direct_auth,
 )
 
 
@@ -375,6 +377,9 @@ PIXIV_DEFAULTS = {
     "llm_timeout": 60,
     "llm_metadata_prompt": "",
     "llm_image_prompt": "",
+    "llm_title_enabled": False,
+    "llm_title_style": "default",
+    "llm_title_prompt": "",
     "title_template": "{stem}",
     "caption": "",
     "tags": "",
@@ -533,6 +538,7 @@ class WebviewBridge:
         self._pixiv_current_thread: Optional[threading.Thread] = None
         self._pixiv_current_job_counter = 0
         self._pixiv_llm_cache: Dict[str, List[str]] = {}
+        self._pixiv_llm_title_cache: Dict[str, str] = {}
         self._pixiv_llm_decision_cache: Dict[str, Dict[str, Any]] = {}
         self._interactive_pixiv_uploader: Optional[PixivUploader] = None
         self._interactive_pixiv_temp_dir = None
@@ -844,6 +850,13 @@ class WebviewBridge:
         except Exception as exc:
             return self._error_response(exc)
 
+    def _safe_config_snapshot(self) -> Dict[str, Any]:
+        safe_config = json.loads(json.dumps(self._config, ensure_ascii=False))
+        safe_config.setdefault("pixiv", {})
+        for field in PIXIV_SENSITIVE_FIELDS:
+            safe_config["pixiv"][field] = ""
+        return safe_config
+
     def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         try:
             with self._lock:
@@ -856,10 +869,7 @@ class WebviewBridge:
                 self._config["last_output_dir"] = batch_settings.get("output_dir", "")
                 self._config["pixiv"] = pixiv_settings
                 self._save_config()
-                safe_config = json.loads(json.dumps(self._config, ensure_ascii=False))
-                safe_config.setdefault("pixiv", {})
-                for field in PIXIV_SENSITIVE_FIELDS:
-                    safe_config["pixiv"][field] = ""
+                safe_config = self._safe_config_snapshot()
             return {"ok": True, "message": "配置已保存", "config": safe_config}
         except Exception as exc:
             return self._error_response(exc)
@@ -962,6 +972,97 @@ class WebviewBridge:
             }
         except Exception as exc:
             self._set_interactive_pixiv_uploader(None)
+            return self._error_response(exc)
+
+    def import_pixiv_browser_auth(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            pixiv_settings = self._normalize_pixiv_settings((settings or {}).get("pixiv", settings or {}))
+            logs: List[str] = []
+            result = import_pixiv_browser_auth(
+                pixiv_settings,
+                log_fn=lambda message: logs.append(str(message)),
+            )
+
+            auto_probe_result = None
+            if result.get("cookie") and not result.get("csrfToken"):
+                probe_settings = dict(pixiv_settings)
+                probe_settings["cookie"] = str(result.get("cookie") or "")
+                probe_settings["csrf_token"] = ""
+                try:
+                    logs.append("[Pixiv] 已拿到 Cookie，正在自动检测直传并补齐 CSRF Token…")
+                    auto_probe_result = probe_pixiv_direct_auth(
+                        probe_settings,
+                        log_fn=lambda message: logs.append(str(message)),
+                    )
+                    probe_token = str(auto_probe_result.get("csrfToken") or "").strip()
+                    if probe_token:
+                        result["csrfToken"] = probe_token
+                        result["needsCsrfProbe"] = False
+                        result["message"] = "已导入 Pixiv 登录态，并自动补齐 CSRF Token"
+                except Exception as probe_exc:
+                    logs.append(f"[Pixiv] 自动补齐 CSRF 失败：{probe_exc}")
+
+            with self._lock:
+                self._session_pixiv_secrets["cookie"] = str(result.get("cookie") or "")
+                self._session_pixiv_secrets["csrf_token"] = str(result.get("csrfToken") or "")
+                merged = self._normalize_pixiv_settings(pixiv_settings)
+                merged["cookie"] = self._session_pixiv_secrets["cookie"]
+                merged["csrf_token"] = self._session_pixiv_secrets["csrf_token"]
+                self._config["pixiv"] = merged
+                self._save_config()
+                safe_config = self._safe_config_snapshot()
+
+            logs.append(
+                f"[Pixiv] 已导入 {result.get('browserLabel', '浏览器')} 配置 {result.get('profileName', '')} 的 Pixiv 登录态。"
+            )
+            if result.get("needsCsrfProbe"):
+                logs.append("[Pixiv] 当前只拿到了 Cookie，还缺 CSRF Token；可以点“检测直传”自动补齐。")
+            return {
+                "ok": True,
+                "cookie": self._session_pixiv_secrets["cookie"],
+                "csrfToken": self._session_pixiv_secrets["csrf_token"],
+                "browserChannel": result.get("browserChannel", pixiv_settings.get("browser_channel", "msedge")),
+                "browserLabel": result.get("browserLabel", ""),
+                "profileName": result.get("profileName", ""),
+                "cookieCount": int(result.get("cookieCount", 0) or 0),
+                "logs": logs,
+                "config": safe_config,
+                "message": str(result.get("message") or "已导入 Pixiv 登录态"),
+            }
+        except Exception as exc:
+            return self._error_response(exc)
+
+    def test_pixiv_direct(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            pixiv_settings = self._normalize_pixiv_settings((settings or {}).get("pixiv", settings or {}))
+            logs: List[str] = []
+            result = probe_pixiv_direct_auth(
+                pixiv_settings,
+                log_fn=lambda message: logs.append(str(message)),
+            )
+
+            csrf_token = str(result.get("csrfToken") or "").strip()
+            safe_config = None
+            if csrf_token:
+                with self._lock:
+                    self._session_pixiv_secrets["cookie"] = str(pixiv_settings.get("cookie") or "")
+                    self._session_pixiv_secrets["csrf_token"] = csrf_token
+                    merged = self._normalize_pixiv_settings(pixiv_settings)
+                    merged["cookie"] = self._session_pixiv_secrets["cookie"]
+                    merged["csrf_token"] = csrf_token
+                    self._config["pixiv"] = merged
+                    self._save_config()
+                    safe_config = self._safe_config_snapshot()
+
+            return {
+                "ok": True,
+                "csrfToken": csrf_token,
+                "logs": logs,
+                "config": safe_config,
+                "message": str(result.get("message") or "Pixiv 直传鉴权可用"),
+                "url": str(result.get("url") or ""),
+            }
+        except Exception as exc:
             return self._error_response(exc)
 
     def fetch_pixiv_llm_models(self, settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -1154,15 +1255,16 @@ class WebviewBridge:
 
                 batch_settings = self._normalize_batch_settings(payload.get("batch", {}))
                 pixiv_settings = self._normalize_pixiv_settings(payload.get("pixiv", {}))
+                retry_failed_files = list(batch_settings.get("retry_failed_files", []) or [])
+                retry_mode = bool(retry_failed_files)
 
                 input_dir = Path(batch_settings["input_dir"]).expanduser()
                 output_dir = Path(batch_settings["output_dir"]).expanduser()
                 if not input_dir.exists() or not input_dir.is_dir():
                     raise RuntimeError("输入目录不存在")
                 output_dir.mkdir(parents=True, exist_ok=True)
-                image_count = len(
-                    [path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES]
-                )
+                image_files, _ = self._resolve_batch_image_files(input_dir, retry_failed_files)
+                image_count = len(image_files)
                 if pixiv_settings["enabled"] and pixiv_settings["upload_mode"] == "direct":
                     if not pixiv_settings["cookie"]:
                         raise RuntimeError("Pixiv 直传模式缺少 Cookie")
@@ -1189,18 +1291,20 @@ class WebviewBridge:
                     "running": True,
                     "completed": False,
                     "cancelRequested": False,
+                    "retryMode": retry_mode,
+                    "requestedFiles": retry_failed_files,
                     "processed": 0,
                     "total": 0,
                     "errors": 0,
                     "successes": 0,
-                    "status": "正在准备批量任务",
-                    "message": "批量任务已创建",
+                    "status": "正在准备失败项重试" if retry_mode else "正在准备批量任务",
+                    "message": "失败项重试任务已创建" if retry_mode else "批量任务已创建",
                     "currentFile": "",
                     "inputDir": str(input_dir),
                     "outputDir": str(output_dir),
                     "lastError": "",
                     "failedFiles": [],
-                    "logs": ["批量任务已创建"],
+                    "logs": ["失败项重试任务已创建" if retry_mode else "批量任务已创建"],
                 }
 
                 self._batch_thread = threading.Thread(
@@ -1362,32 +1466,34 @@ class WebviewBridge:
         self,
         job_id: int,
         settings: Dict[str, Any],
-        batch_settings: Dict[str, str],
+        batch_settings: Dict[str, Any],
         pixiv_settings: Dict[str, Any],
     ) -> None:
         pixiv_uploader: Optional[PixivUploader] = None
         try:
             input_dir = Path(batch_settings["input_dir"]).expanduser()
             output_dir = Path(batch_settings["output_dir"]).expanduser()
-            image_files = sorted(
-                [
-                    path
-                    for path in input_dir.iterdir()
-                    if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
-                ],
-                key=lambda item: item.name.lower(),
-            )
+            retry_failed_files = list(batch_settings.get("retry_failed_files", []) or [])
+            retry_mode = bool(retry_failed_files)
+            image_files, missing_retry_files = self._resolve_batch_image_files(input_dir, retry_failed_files)
+            if missing_retry_files:
+                self._batch_log(
+                    job_id,
+                    f"以下失败项已不在输入目录中，已跳过：{', '.join(missing_retry_files)}",
+                )
+            if retry_mode:
+                self._batch_log(job_id, f"本次只重跑 {len(image_files)} 个失败项")
 
             with self._lock:
                 if self._batch_state.get("jobId") != job_id:
                     return
                 self._batch_state["total"] = len(image_files)
-                self._batch_state["status"] = "正在处理中"
-                self._batch_state["message"] = "正在处理中"
+                self._batch_state["status"] = "正在重试失败项" if retry_mode else "正在处理中"
+                self._batch_state["message"] = self._batch_state["status"]
 
             if not image_files:
-                self._batch_log(job_id, "输入目录中没有可处理的图片")
-                self._finish_batch(job_id, message="未找到可处理的图片")
+                self._batch_log(job_id, "没有找到可处理的失败项" if retry_mode else "输入目录中没有可处理的图片")
+                self._finish_batch(job_id, message="没有找到可处理的失败项" if retry_mode else "未找到可处理的图片")
                 return
 
             if pixiv_settings["enabled"]:
@@ -1433,6 +1539,14 @@ class WebviewBridge:
                                 )
                             tag_bundle = self._build_pixiv_tag_bundle(image_path, pixiv_settings, settings)
                             pixiv_tags = tag_bundle["tags"]
+                            pixiv_title = self._build_pixiv_title(
+                                result_path,
+                                pixiv_settings,
+                                metadata_tags=tag_bundle.get("metadata_tags", []),
+                                final_tags=pixiv_tags,
+                                info_messages=tag_bundle["infos"],
+                                warning_messages=tag_bundle["warnings"],
+                            )
                             effective_age_restriction = tag_bundle["safety"]["effective_age"]
                             for message in tag_bundle["infos"]:
                                 self._batch_log(job_id, f"[Pixiv] {message}")
@@ -1445,7 +1559,7 @@ class WebviewBridge:
 
                             pixiv_uploader.upload_image(
                                 upload_path,
-                                title=self._build_pixiv_title(result_path, pixiv_settings),
+                                title=pixiv_title,
                                 caption=pixiv_settings["caption"],
                                 tags=pixiv_tags,
                                 visibility=pixiv_settings["visibility"],
@@ -1527,6 +1641,8 @@ class WebviewBridge:
             "running": bool(self._batch_state.get("running", False)),
             "completed": bool(self._batch_state.get("completed", False)),
             "cancelRequested": bool(self._batch_state.get("cancelRequested", False)),
+            "retryMode": bool(self._batch_state.get("retryMode", False)),
+            "requestedFiles": list(self._batch_state.get("requestedFiles", [])),
             "processed": int(self._batch_state.get("processed", 0)),
             "total": int(self._batch_state.get("total", 0)),
             "errors": int(self._batch_state.get("errors", 0)),
@@ -1548,6 +1664,8 @@ class WebviewBridge:
             "running": False,
             "completed": False,
             "cancelRequested": False,
+            "retryMode": False,
+            "requestedFiles": [],
             "processed": 0,
             "total": 0,
             "errors": 0,
@@ -1668,9 +1786,17 @@ class WebviewBridge:
                 raise RuntimeError("Pixiv 安全护栏已拦截当前图片的自动投稿")
 
             self._set_pixiv_current_status(job_id, f"正在上传到 Pixiv: {upload_path.name}")
+            pixiv_title = self._build_pixiv_title(
+                result_path,
+                pixiv_settings,
+                metadata_tags=tag_bundle.get("metadata_tags", []),
+                final_tags=tag_bundle["tags"],
+                info_messages=tag_bundle["infos"],
+                warning_messages=tag_bundle["warnings"],
+            )
             pixiv_uploader.upload_image(
                 upload_path,
-                title=self._build_pixiv_title(result_path, pixiv_settings),
+                title=pixiv_title,
                 caption=pixiv_settings["caption"],
                 tags=tag_bundle["tags"],
                 visibility=pixiv_settings["visibility"],
@@ -2011,12 +2137,54 @@ class WebviewBridge:
             },
         }
 
-    def _normalize_batch_settings(self, batch: Dict[str, Any]) -> Dict[str, str]:
+    def _normalize_batch_settings(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         batch = batch or {}
+        retry_failed_files: List[str] = []
+        raw_retry = batch.get("retry_failed_files", [])
+        if isinstance(raw_retry, (list, tuple, set)):
+            for item in raw_retry:
+                name = Path(str(item or "")).name.strip()
+                if not name or name in retry_failed_files:
+                    continue
+                retry_failed_files.append(name)
         return {
             "input_dir": str(batch.get("input_dir", self._config.get("last_input_dir", "")) or "").strip(),
             "output_dir": str(batch.get("output_dir", self._config.get("last_output_dir", "")) or "").strip(),
+            "retry_failed_files": retry_failed_files,
         }
+
+    def _resolve_batch_image_files(
+        self,
+        input_dir: Path,
+        retry_failed_files: Optional[List[str]] = None,
+    ) -> Tuple[List[Path], List[str]]:
+        available = sorted(
+            [
+                path
+                for path in input_dir.iterdir()
+                if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+            ],
+            key=lambda item: item.name.lower(),
+        )
+
+        if not retry_failed_files:
+            return available, []
+
+        by_name = {path.name: path for path in available}
+        matched: List[Path] = []
+        missing: List[str] = []
+        seen = set()
+        for raw_name in retry_failed_files:
+            name = Path(str(raw_name or "")).name.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            candidate = by_name.get(name)
+            if candidate is None:
+                missing.append(name)
+                continue
+            matched.append(candidate)
+        return matched, missing
 
     def _normalize_pixiv_settings(self, pixiv: Dict[str, Any]) -> Dict[str, Any]:
         merged = dict(PIXIV_DEFAULTS)
@@ -2036,6 +2204,9 @@ class WebviewBridge:
         merged["llm_model"] = str(merged.get("llm_model") or "").strip()
         merged["llm_metadata_prompt"] = str(merged.get("llm_metadata_prompt") or "").strip()
         merged["llm_image_prompt"] = str(merged.get("llm_image_prompt") or "").strip()
+        merged["llm_title_enabled"] = bool(merged.get("llm_title_enabled", PIXIV_DEFAULTS["llm_title_enabled"]))
+        merged["llm_title_style"] = str(merged.get("llm_title_style") or PIXIV_DEFAULTS["llm_title_style"]).strip() or "default"
+        merged["llm_title_prompt"] = str(merged.get("llm_title_prompt") or "").strip()
         try:
             merged["llm_temperature"] = float(merged.get("llm_temperature", 0.1))
         except (TypeError, ValueError):
@@ -2232,12 +2403,30 @@ class WebviewBridge:
                 active.append(step)
         return active
 
-    def _build_pixiv_title(self, image_path: Path, pixiv_settings: Dict[str, Any]) -> str:
+    def _build_pixiv_title(
+        self,
+        image_path: Path,
+        pixiv_settings: Dict[str, Any],
+        *,
+        metadata_tags: Optional[List[str]] = None,
+        final_tags: Optional[List[str]] = None,
+        info_messages: Optional[List[str]] = None,
+        warning_messages: Optional[List[str]] = None,
+    ) -> str:
         template = str(pixiv_settings.get("title_template") or "{stem}")
         try:
-            return template.format(stem=image_path.stem, name=image_path.name)
+            base_title = template.format(stem=image_path.stem, name=image_path.name)
         except Exception:
-            return image_path.stem
+            base_title = image_path.stem
+        return self._generate_llm_pixiv_title(
+            image_path=image_path,
+            base_title=base_title,
+            metadata_tags=list(metadata_tags or []),
+            final_tags=list(final_tags or []),
+            pixiv_settings=pixiv_settings,
+            info_messages=info_messages,
+            warning_messages=warning_messages,
+        )
 
     def _extract_metadata_tags(self, image_path: Path) -> Tuple[List[str], List[str]]:
         try:
@@ -2371,7 +2560,94 @@ class WebviewBridge:
             timeout=pixiv_settings.get("llm_timeout", 60),
             system_prompt=pixiv_settings.get("llm_metadata_prompt", "") or None,
             vision_system_prompt=pixiv_settings.get("llm_image_prompt", "") or None,
+            title_system_prompt=pixiv_settings.get("llm_title_prompt", "") or None,
         )
+
+    def _pixiv_llm_title_cache_key(
+        self,
+        *,
+        base_title: str,
+        metadata_tags: List[str],
+        final_tags: List[str],
+        pixiv_settings: Dict[str, Any],
+        image_path: Path,
+    ) -> str:
+        try:
+            resolved = Path(image_path).resolve()
+        except Exception:
+            resolved = Path(image_path)
+        return json.dumps(
+            {
+                "kind": "title",
+                "base_title": str(base_title or "").strip(),
+                "metadata_tags": metadata_tags,
+                "final_tags": final_tags,
+                "path": str(resolved),
+                "base_url": pixiv_settings.get("llm_base_url", ""),
+                "model": pixiv_settings.get("llm_model", ""),
+                "title_prompt": pixiv_settings.get("llm_title_prompt", ""),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _generate_llm_pixiv_title(
+        self,
+        *,
+        image_path: Path,
+        base_title: str,
+        metadata_tags: List[str],
+        final_tags: List[str],
+        pixiv_settings: Dict[str, Any],
+        info_messages: Optional[List[str]] = None,
+        warning_messages: Optional[List[str]] = None,
+    ) -> str:
+        if not pixiv_settings.get("llm_title_enabled", False):
+            return str(base_title or "").strip()
+        if not pixiv_settings.get("llm_enabled", False):
+            if warning_messages is not None:
+                warning_messages.append("AI 标题润色已启用，但 LLM 总开关未开启，已回退到标题模板。")
+            return str(base_title or "").strip()
+        if not pixiv_settings.get("llm_base_url"):
+            if warning_messages is not None:
+                warning_messages.append("AI 标题润色已启用，但 Base URL 为空，已回退到标题模板。")
+            return str(base_title or "").strip()
+        if not pixiv_settings.get("llm_model"):
+            if warning_messages is not None:
+                warning_messages.append("AI 标题润色已启用，但 Model 为空，已回退到标题模板。")
+            return str(base_title or "").strip()
+
+        cache_key = self._pixiv_llm_title_cache_key(
+            base_title=base_title,
+            metadata_tags=metadata_tags,
+            final_tags=final_tags,
+            pixiv_settings=pixiv_settings,
+            image_path=image_path,
+        )
+        if cache_key in self._pixiv_llm_title_cache:
+            title = self._pixiv_llm_title_cache[cache_key]
+            if info_messages is not None:
+                info_messages.append("已复用缓存的 AI 标题润色结果。")
+            return title
+
+        try:
+            tagger = self._build_pixiv_llm_tagger(pixiv_settings)
+            title = tagger.generate_title(
+                base_title=base_title,
+                file_name=Path(image_path).name,
+                metadata_tags=metadata_tags,
+                final_tags=final_tags,
+            )
+            self._pixiv_llm_title_cache[cache_key] = title
+            if info_messages is not None and title != str(base_title or "").strip():
+                info_messages.append("LLM 已在标题模板基础上润色 Pixiv 标题。")
+            elif info_messages is not None:
+                info_messages.append("LLM 已检查标题模板，当前标题保持不变。")
+            return title
+        except Exception as exc:
+            if warning_messages is not None:
+                warning_messages.append(f"AI 标题润色失败，已回退到标题模板：{exc}")
+            return str(base_title or "").strip()
 
     def _generate_llm_pixiv_tags(
         self,
@@ -2840,6 +3116,7 @@ class WebviewBridge:
             "errors": errors,
             "safety": safety,
             "sexual_depiction": sexual_depiction,
+            "metadata_tags": metadata_tags,
         }
 
     def _resolve_pixiv_preview_source(self, batch_settings: Optional[Dict[str, Any]] = None) -> Path:
@@ -2930,12 +3207,27 @@ class WebviewBridge:
             "yes": "有",
             "no": "无",
         }
+        title_style_labels = {
+            "default": "默认润色",
+            "minimal": "极简克制",
+            "dreamy": "梦幻氛围",
+            "light_novel": "轻小说风",
+            "character_focus": "角色聚焦",
+            "custom": "自定义 Prompt",
+        }
 
         errors: List[str] = []
         warnings: List[str] = []
         infos: List[str] = []
-        title = self._build_pixiv_title(image_path, pixiv_settings)
         tag_bundle = self._build_pixiv_tag_bundle(image_path, pixiv_settings, pipeline_settings)
+        title = self._build_pixiv_title(
+            image_path,
+            pixiv_settings,
+            metadata_tags=tag_bundle.get("metadata_tags", []),
+            final_tags=tag_bundle["tags"],
+            info_messages=infos,
+            warning_messages=warnings,
+        )
         tags = tag_bundle["tags"]
         infos.extend(tag_bundle["infos"])
         warnings.extend(tag_bundle["warnings"])
@@ -2985,6 +3277,12 @@ class WebviewBridge:
             "sourcePath": str(image_path),
             "sourceSizeLabel": self._format_bytes(source_size),
             "title": title,
+            "titleAiEnabled": bool(pixiv_settings.get("llm_enabled", False) and pixiv_settings.get("llm_title_enabled", False)),
+            "titleStyle": str(pixiv_settings.get("llm_title_style") or "default"),
+            "titleStyleLabel": title_style_labels.get(
+                str(pixiv_settings.get("llm_title_style") or "default"),
+                str(pixiv_settings.get("llm_title_style") or "default"),
+            ),
             "caption": str(pixiv_settings.get("caption") or ""),
             "tags": tags,
             "tagCount": len(tags),
