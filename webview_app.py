@@ -109,6 +109,7 @@ WINDOW_DEFAULT_WIDTH = 1600
 WINDOW_DEFAULT_HEIGHT = 980
 WINDOW_MIN_WIDTH = 1080
 WINDOW_MIN_HEIGHT = 680
+WINDOW_MINIMIZED_SENTINEL = -32000
 QUALITY_BLACKLIST = {
     "masterpiece",
     "best quality",
@@ -827,6 +828,31 @@ class WebviewBridge:
         except Exception as exc:
             return self._error_response(exc)
 
+    def list_images_in_directory(self, directory_path: str = "") -> Dict[str, Any]:
+        try:
+            raw = str(directory_path or "").strip()
+            if not raw:
+                raise RuntimeError("未提供目录路径")
+            directory = Path(raw).expanduser()
+            if not directory.exists() or not directory.is_dir():
+                raise RuntimeError("目录不存在")
+            paths = sorted(
+                [
+                    str(path)
+                    for path in directory.iterdir()
+                    if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+                ],
+                key=lambda item: Path(item).name.lower(),
+            )
+            return {
+                "ok": True,
+                "directory": str(directory),
+                "paths": paths,
+                "message": f"已读取文件夹，共 {len(paths)} 张图片" if paths else "当前文件夹里没有可导入的图片",
+            }
+        except Exception as exc:
+            return self._error_response(exc)
+
     def open_path_in_explorer(self, path: str = "") -> Dict[str, Any]:
         try:
             raw = str(path or "").strip()
@@ -959,6 +985,7 @@ class WebviewBridge:
                 f"[Pixiv Debug] JSON: {snapshot.get('jsonPath', '')}",
                 f"[Pixiv Debug] HTML: {snapshot.get('htmlPath', '')}",
                 f"[Pixiv Debug] Screenshot: {snapshot.get('screenshotPath', '')}",
+                f"[Pixiv Debug] Sanitized: {snapshot.get('sanitized', False)}",
                 f"[Pixiv Debug] Tag count: {snapshot.get('tagCount', '')}",
                 f"[Pixiv Debug] Input: {snapshot.get('tagInputValue', '') or '<empty>'}",
                 f"[Pixiv Debug] Selected: {snapshot.get('selectedTagChips', [])}",
@@ -968,7 +995,7 @@ class WebviewBridge:
                 "ok": True,
                 "logs": logs,
                 "snapshot": snapshot,
-                "message": "已抓取当前 Pixiv 投稿页调试快照",
+                "message": "已抓取当前 Pixiv 投稿页的脱敏调试快照",
             }
         except Exception as exc:
             self._set_interactive_pixiv_uploader(None)
@@ -1938,6 +1965,12 @@ class WebviewBridge:
         except (TypeError, ValueError):
             y = None
 
+        # Windows may report minimized/off-screen placeholder coordinates such as -32768.
+        if x is not None and x <= WINDOW_MINIMIZED_SENTINEL:
+            x = None
+        if y is not None and y <= WINDOW_MINIMIZED_SENTINEL:
+            y = None
+
         return {
             "width": width,
             "height": height,
@@ -2010,9 +2043,13 @@ class WebviewBridge:
                 if height is not None:
                     state["height"] = max(WINDOW_MIN_HEIGHT, int(height))
                 if x is not None:
-                    state["x"] = int(x)
+                    x = int(x)
+                    if x > WINDOW_MINIMIZED_SENTINEL:
+                        state["x"] = x
                 if y is not None:
-                    state["y"] = int(y)
+                    y = int(y)
+                    if y > WINDOW_MINIMIZED_SENTINEL:
+                        state["y"] = y
                 if maximized is not None:
                     state["maximized"] = bool(maximized)
 
@@ -2024,8 +2061,12 @@ class WebviewBridge:
                         except Exception:
                             pass
                         try:
-                            state["x"] = int(window.x)
-                            state["y"] = int(window.y)
+                            window_x = int(window.x)
+                            window_y = int(window.y)
+                            if window_x > WINDOW_MINIMIZED_SENTINEL:
+                                state["x"] = window_x
+                            if window_y > WINDOW_MINIMIZED_SENTINEL:
+                                state["y"] = window_y
                         except Exception:
                             pass
 

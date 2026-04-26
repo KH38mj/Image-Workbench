@@ -34,6 +34,35 @@ PIXIV_DIRECT_TOKEN_PATTERNS = [
     re.compile(r""""token"\s*:\s*"(?P<token>[^"]+)""", re.IGNORECASE),
     re.compile(r"""name=["']csrf-token["']\s+content=["'](?P<token>[^"']+)""", re.IGNORECASE),
 ]
+PIXIV_DEBUG_REDACTION_PATTERNS = [
+    (
+        re.compile(r"""(?P<prefix>g_csrfToken\s*=\s*["'])(?P<value>[^"']+)(?P<suffix>["'])""", re.IGNORECASE),
+        r"\g<prefix>[redacted]\g<suffix>",
+    ),
+    (
+        re.compile(r"""(?P<prefix>"csrfToken"\s*:\s*")(?P<value>[^"]+)(?P<suffix>")""", re.IGNORECASE),
+        r"\g<prefix>[redacted]\g<suffix>",
+    ),
+    (
+        re.compile(r"""(?P<prefix>"token"\s*:\s*")(?P<value>[^"]+)(?P<suffix>")""", re.IGNORECASE),
+        r"\g<prefix>[redacted]\g<suffix>",
+    ),
+    (
+        re.compile(r"""(?P<prefix>name=["']csrf-token["']\s+content=["'])(?P<value>[^"']+)(?P<suffix>["'])""", re.IGNORECASE),
+        r"\g<prefix>[redacted]\g<suffix>",
+    ),
+    (
+        re.compile(r"""(?P<prefix>csrf-token["']?\]?\s+content=["'])(?P<value>[^"']+)(?P<suffix>["'])""", re.IGNORECASE),
+        r"\g<prefix>[redacted]\g<suffix>",
+    ),
+    (
+        re.compile(r"""(?P<prefix>(?:PHPSESSID|device_token)\s*=\s*)(?P<value>[^;'"<>\s]+)""", re.IGNORECASE),
+        r"\g<prefix>[redacted]",
+    ),
+]
+PIXIV_DEBUG_REDACTION_NOTE = (
+    "This diagnostic snapshot is sanitized for tag debugging. Review locally before sharing."
+)
 
 
 class _BasePixivUploader:
@@ -272,6 +301,92 @@ def _looks_like_transient_page_state_error(error_text: str) -> bool:
             "exceeded",
         )
     )
+
+
+def _sanitize_pixiv_debug_text(value: str) -> str:
+    text = str(value or "")
+    for pattern, replacement in PIXIV_DEBUG_REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _sanitize_pixiv_debug_value(value):
+    if isinstance(value, str):
+        return _sanitize_pixiv_debug_text(value)
+    if isinstance(value, list):
+        return [_sanitize_pixiv_debug_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _sanitize_pixiv_debug_value(item) for key, item in value.items()}
+    return value
+
+
+def _render_pixiv_debug_report(snapshot: dict) -> str:
+    safe_snapshot = _sanitize_pixiv_debug_value(snapshot or {})
+
+    def esc(value: str) -> str:
+        text = str(value or "")
+        return (
+            text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    selected = safe_snapshot.get("selectedTagTexts") or safe_snapshot.get("selectedTagChips") or []
+    nearby = json.dumps(safe_snapshot.get("nearbyTagElements", []), ensure_ascii=False, indent=2)
+    container_html = str(safe_snapshot.get("tagContainerHtml") or "")
+    suggestion_html = str(safe_snapshot.get("suggestionContainerHtml") or "")
+
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Pixiv Tag Debug Snapshot</title>
+  <style>
+    body {{ font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; color: #1f2937; background: #f7f7f5; }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    p {{ margin: 0 0 10px; }}
+    .note {{ margin-bottom: 20px; padding: 12px 14px; border-left: 4px solid #d97706; background: #fff7ed; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 20px; }}
+    .card {{ margin-bottom: 16px; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06); }}
+    pre {{ margin: 0; white-space: pre-wrap; word-break: break-word; font-family: Consolas, "Cascadia Code", monospace; font-size: 12px; }}
+    ul {{ margin: 0; padding-left: 20px; }}
+  </style>
+</head>
+<body>
+  <div class="note">{esc(PIXIV_DEBUG_REDACTION_NOTE)}</div>
+  <h1>Pixiv 标签调试快照</h1>
+  <div class="grid">
+    <section class="card">
+      <h2>基础信息</h2>
+      <p><strong>URL:</strong> {esc(safe_snapshot.get("url", ""))}</p>
+      <p><strong>页面标题:</strong> {esc(safe_snapshot.get("title", ""))}</p>
+      <p><strong>标签提示:</strong> {esc(safe_snapshot.get("tagHint", ""))}</p>
+      <p><strong>当前输入:</strong> {esc(safe_snapshot.get("tagInputValue", "") or "<empty>")}</p>
+      <p><strong>标签数量:</strong> {esc(safe_snapshot.get("tagCount", ""))}</p>
+      <p><strong>激活元素:</strong> {esc(safe_snapshot.get("activeElement", ""))}</p>
+    </section>
+    <section class="card">
+      <h2>已识别标签</h2>
+      <ul>{"".join(f"<li>{esc(item)}</li>" for item in selected) or "<li>&lt;empty&gt;</li>"}</ul>
+      <p><strong>Inline tokens:</strong> {esc(", ".join(safe_snapshot.get("selectedTagInlineTokens", [])) or "<empty>")}</p>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Tag Container HTML</h2>
+    <pre>{esc(container_html)}</pre>
+  </section>
+  <section class="card">
+    <h2>Suggestion Container HTML</h2>
+    <pre>{esc(suggestion_html)}</pre>
+  </section>
+  <section class="card">
+    <h2>Nearby Tag Elements</h2>
+    <pre>{esc(nearby)}</pre>
+  </section>
+</body>
+</html>
+"""
 
 
 def _read_pixiv_auth_from_page(context, page) -> dict:
@@ -548,6 +663,17 @@ class _BrowserPixivUploader(_BasePixivUploader):
         except Exception:
             return ""
 
+    def _write_debug_focus_screenshot(self, primary_locator, secondary_locator, screenshot_path: Path) -> bool:
+        for locator in (primary_locator, secondary_locator):
+            if locator is None or self._count(locator) <= 0:
+                continue
+            try:
+                locator.first.screenshot(path=str(screenshot_path))
+                return True
+            except Exception:
+                continue
+        return False
+
     def _collect_tag_debug_elements(self, page, tag_hint: str = "") -> List[dict]:
         tag_container = self._find_tag_container(page)
         root = tag_container or page.locator("body").first
@@ -632,25 +758,28 @@ class _BrowserPixivUploader(_BasePixivUploader):
             "tagContainerHtml": self._locator_outer_html(tag_container),
             "suggestionContainerHtml": self._locator_outer_html(suggestion_container),
             "nearbyTagElements": self._collect_tag_debug_elements(page, tag_hint=tag_hint),
+            "sanitized": True,
+            "note": PIXIV_DEBUG_REDACTION_NOTE,
         }
 
-        html_path.write_text(page.content(), encoding="utf-8")
-        json_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-        try:
-            page.screenshot(path=str(screenshot_path), full_page=True)
-        except Exception:
+        safe_snapshot = _sanitize_pixiv_debug_value(snapshot)
+        html_path.write_text(_render_pixiv_debug_report(safe_snapshot), encoding="utf-8")
+        json_path.write_text(json.dumps(safe_snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not self._write_debug_focus_screenshot(tag_container, suggestion_container, screenshot_path):
             screenshot_path.write_bytes(b"")
 
-        self._log(f"[Pixiv Debug] Snapshot saved: {json_path}")
+        self._log(f"[Pixiv Debug] Sanitized snapshot saved: {json_path}")
         return {
             "jsonPath": str(json_path),
             "htmlPath": str(html_path),
             "screenshotPath": str(screenshot_path),
-            "tagCount": snapshot["tagCount"],
-            "tagInputValue": snapshot["tagInputValue"],
-            "selectedTagChips": snapshot["selectedTagChips"],
-            "selectedTagInlineTokens": snapshot["selectedTagInlineTokens"],
-            "url": snapshot["url"],
+            "tagCount": safe_snapshot["tagCount"],
+            "tagInputValue": safe_snapshot["tagInputValue"],
+            "selectedTagChips": safe_snapshot["selectedTagChips"],
+            "selectedTagInlineTokens": safe_snapshot["selectedTagInlineTokens"],
+            "url": safe_snapshot["url"],
+            "sanitized": True,
+            "note": PIXIV_DEBUG_REDACTION_NOTE,
         }
 
     def _count(self, locator) -> int:

@@ -24,6 +24,10 @@ models/
 # Temporary repos and scratch data
 .tmp_repo_ANR/
 .tmp_repo_SANP/
+tmp_pixiv_diag/
+tmp_video_frames/
+tmp_video_frames_*/
+tmp_video_frames_tail/
 
 # Editors and OS files
 .vscode/

@@ -123,6 +123,43 @@ class PixivDirectAuthHelpersTests(unittest.TestCase):
         finally:
             uploader.close()
 
+    def test_sanitize_pixiv_debug_value_redacts_csrf_and_cookie_values(self):
+        payload = {
+            "html": '<script>window.g_csrfToken = "secret-token";</script>',
+            "cookie": "PHPSESSID=abc123; device_token=def456",
+            "nested": [{"meta": '<meta name="csrf-token" content="csrf-1">'}],
+        }
+
+        sanitized = pixiv_uploader._sanitize_pixiv_debug_value(payload)
+
+        self.assertNotIn("secret-token", sanitized["html"])
+        self.assertNotIn("abc123", sanitized["cookie"])
+        self.assertNotIn("def456", sanitized["cookie"])
+        self.assertIn("[redacted]", sanitized["nested"][0]["meta"])
+
+    def test_render_pixiv_debug_report_omits_raw_sensitive_values(self):
+        snapshot = {
+            "url": "https://www.pixiv.net/upload.php",
+            "title": "Upload",
+            "tagHint": "女の子",
+            "tagInputValue": "女の子",
+            "tagCount": 1,
+            "activeElement": 'meta[name="csrf-token"] content="csrf-secret"',
+            "selectedTagTexts": ["女の子"],
+            "selectedTagInlineTokens": ["#女の子"],
+            "tagContainerHtml": '<meta name="csrf-token" content="csrf-secret"><div>女の子</div>',
+            "suggestionContainerHtml": '<div>PHPSESSID=abc123</div>',
+            "nearbyTagElements": [{"text": "女の子", "title": 'device_token=def456'}],
+        }
+
+        report = pixiv_uploader._render_pixiv_debug_report(snapshot)
+
+        self.assertIn("Pixiv 标签调试快照", report)
+        self.assertIn("[redacted]", report)
+        self.assertNotIn("csrf-secret", report)
+        self.assertNotIn("abc123", report)
+        self.assertNotIn("def456", report)
+
 
 if __name__ == "__main__":
     unittest.main()

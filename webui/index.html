@@ -17,7 +17,16 @@
   </div>
 
   <div class="app-shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="floatingWorkbench">
+      <div class="floating-panel-bar" id="floatingWorkbenchHandle">
+        <span class="floating-panel-title">工作台</span>
+        <div class="floating-panel-actions">
+          <button id="toggleWorkbenchBtn" class="button ghost" type="button">收起</button>
+        </div>
+      </div>
+      <div class="floating-panel-resizer" id="floatingWorkbenchResizer" aria-hidden="true"></div>
+      <div class="floating-panel-resizer-bottom" id="floatingWorkbenchBottomResizer" aria-hidden="true"></div>
+      <div class="sidebar-body">
       <div class="brand-block">
         <div class="eyebrow">PyWebView Frontend</div>
         <h1>Image Workbench</h1>
@@ -43,6 +52,28 @@
             <div class="file-pill" id="currentFile">未选择图片</div>
             <p class="support-copy">支持把图片直接拖进右侧工作台，也可以从最近记录里一键恢复。</p>
             <div class="recent-list" id="recentList"></div>
+          </section>
+
+          <section class="panel compact">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">Queue</span>
+                <h2>当前批次</h2>
+              </div>
+              <div class="button-row">
+                <button id="importQueueFolderBtn" class="button ghost" type="button">导入文件夹</button>
+                <button id="clearQueueBtn" class="button ghost" type="button">清空批次</button>
+              </div>
+            </div>
+            <p class="support-copy" id="queueHint">把多张图片一起拖进右侧工作台后，这里会显示本次待处理队列。</p>
+            <div class="button-row">
+              <button id="prevQueueBtn" class="button ghost" type="button">上一张</button>
+              <button id="nextQueueBtn" class="button ghost" type="button">下一张</button>
+            </div>
+            <div class="button-row">
+              <button id="applyRegionsForwardBtn" class="button accent" type="button">当前选区应用到后续</button>
+            </div>
+            <div class="queue-list" id="queueList"></div>
           </section>
 
           <section class="panel compact guide-card" id="quickStartGuide">
@@ -229,6 +260,8 @@
               <span class="hint">在右侧源图上拖拽选择区域</span>
               <div class="region-actions">
                 <button id="undoRegionBtn" class="button ghost">撤销上一个</button>
+                <button id="redoRegionBtn" class="button ghost">重做</button>
+                <button id="deleteRegionBtn" class="button ghost">删除选中</button>
                 <button id="clearRegionsBtn" class="button ghost">清空选区</button>
               </div>
             </div>
@@ -410,7 +443,7 @@
                           <button id="importPixivAuthBtn" class="button ghost" type="button">从浏览器导入</button>
                           <button id="testPixivDirectBtn" class="button ghost" type="button">检测直传</button>
                         </div>
-                        <p class="support-copy field-note save-state-copy" id="pixivDirectStatus" data-state="idle">直传模式会读取当前所选浏览器里的 Pixiv 登录态，并自动补齐 CSRF Token。</p>
+                        <p class="support-copy field-note save-state-copy" id="pixivDirectStatus" data-state="idle">直传模式会读取当前所选浏览器里的 Pixiv 登录态，并自动补齐 CSRF Token。浏览器自动填写模式自己的资料目录会保存在本机。</p>
                       </label>
                       <label class="field full">
                         <span>LLM 接口地址</span>
@@ -433,7 +466,7 @@
                         <span>Pixiv 投稿</span>
                         <div class="inline-grid wide">
                           <button id="testPixivUploadBtn" class="button ghost" type="button">处理当前图片并打开 Pixiv 草稿</button>
-                          <button id="capturePixivDebugBtn" class="button ghost" type="button">抓取 Pixiv 调试快照</button>
+                          <button id="capturePixivDebugBtn" class="button ghost" type="button">抓取脱敏调试快照</button>
                         </div>
                       </label>
                       <label class="switch card-switch field full">
@@ -511,10 +544,11 @@
             </div>
             <p class="support-copy" id="pixivModeHint">自动标签会裁剪到 Pixiv 当前的 10 个上限。手动投稿模式下，浏览器会停在投稿页，方便你确认标题、标签和说明是否符合预期。</p>
             <p class="support-copy field-note">LLM 模型支持从提供商自动读取，也支持手动输入。先填写 Base URL 和 API Key，再点读取模型会更顺手。流程上会先做看图打标，再把看图结果和 metadata 一起交给综合整理模型。两个 Prompt 栏位留空时都会回退到内置默认 prompt。</p>
-            <p class="support-copy">Cookie / CSRF Token 和 LLM API Key 都属于敏感凭证，只建议保存在你自己的本机配置里，不要提交到 GitHub。安全策略默认会自动升到 R-18 / R-18G，并拦截高风险未成年性化组合，喵。</p>
-            <p class="support-copy field-note save-state-copy" id="pixivSaveState" data-state="idle">配置改动会自动保存；敏感凭证不会落盘。</p>
+            <p class="support-copy">Cookie / CSRF Token 和 LLM API Key 都属于敏感凭证，只建议保存在你自己的本机配置里，不要提交到 GitHub。浏览器自动填写模式的本地资料目录和调试快照也都只建议留在自己的机器上。安全策略默认会自动升到 R-18 / R-18G，并拦截高风险未成年性化组合，喵。</p>
+            <p class="support-copy field-note save-state-copy" id="pixivSaveState" data-state="idle">配置改动会自动保存；敏感凭证不会写进配置文件，但浏览器资料目录和调试快照会保留在本机。</p>
           </section>
         </div>
+      </div>
       </div>
     </aside>
 
@@ -525,6 +559,7 @@
           <h2>源图选区 + 结果预览</h2>
         </div>
         <div class="workspace-header-actions">
+          <button id="toggleLogsBtn" class="button ghost" type="button">日志：隐藏</button>
           <button id="compactModeBtn" class="button ghost" type="button">紧凑模式：关</button>
           <div class="workspace-badges">
             <span class="badge" id="badgeSourceSize">源图: -</span>
@@ -542,7 +577,14 @@
               <span class="panel-kicker">Source Stage</span>
               <h3>源图工作台</h3>
             </div>
-            <span class="stage-caption" id="sourceMeta">未选择图片</span>
+            <div class="stage-head-tools">
+              <span class="stage-caption" id="sourceMeta">未选择图片</span>
+              <div class="stage-zoom-tools">
+                <button id="sourceZoomOutBtn" class="button ghost" type="button" title="缩小源图视图">-</button>
+                <button id="sourceZoomResetBtn" class="button ghost" type="button" title="重置源图缩放">100%</button>
+                <button id="sourceZoomInBtn" class="button ghost" type="button" title="放大源图视图">+</button>
+              </div>
+            </div>
           </div>
           <div class="viewport source" id="sourceViewport">
             <div class="drop-overlay hidden" id="sourceDropOverlay">
@@ -567,7 +609,14 @@
               <span class="panel-kicker">Preview Stage</span>
               <h3>结果预览</h3>
             </div>
-            <span class="stage-caption" id="resultMeta">等待生成预览</span>
+            <div class="stage-head-tools">
+              <span class="stage-caption" id="resultMeta">等待生成预览</span>
+              <div class="stage-zoom-tools">
+                <button id="resultZoomOutBtn" class="button ghost" type="button" title="缩小结果预览">-</button>
+                <button id="resultZoomResetBtn" class="button ghost" type="button" title="重置结果缩放">100%</button>
+                <button id="resultZoomInBtn" class="button ghost" type="button" title="放大结果预览">+</button>
+              </div>
+            </div>
           </div>
           <div class="viewport result" id="resultViewport">
             <div class="drop-overlay hidden" id="resultDropOverlay">
@@ -585,26 +634,31 @@
         </section>
       </div>
 
-      <section class="log-card">
-        <div class="panel-head">
-          <div>
-            <span class="panel-kicker">Activity</span>
-            <h2>处理日志</h2>
+      <details class="log-card fold-card workspace-log-card" id="workspaceLogPanel">
+        <summary>
+          <div class="panel-head workspace-log-head">
+            <div>
+              <span class="panel-kicker">Activity</span>
+              <h2>处理日志</h2>
+            </div>
+            <span class="workspace-log-summary">默认折叠，需要时再展开</span>
           </div>
+        </summary>
+        <div class="fold-content workspace-log-content">
           <div class="log-actions">
             <button id="copyLogBtn" class="button ghost">复制日志</button>
             <button id="exportLogBtn" class="button ghost">导出日志</button>
             <button id="clearLogBtn" class="button ghost">清空日志</button>
           </div>
+          <div class="log-filter-bar">
+            <button class="mini-chip log-filter-btn is-active" type="button" data-log-filter="all" aria-pressed="true">全部</button>
+            <button class="mini-chip log-filter-btn" type="button" data-log-filter="task" aria-pressed="false">任务中</button>
+            <button class="mini-chip log-filter-btn" type="button" data-log-filter="pixiv" aria-pressed="false">Pixiv</button>
+            <button class="mini-chip log-filter-btn" type="button" data-log-filter="error" aria-pressed="false">错误</button>
+          </div>
+          <div id="logList" class="log-list"></div>
         </div>
-        <div class="log-filter-bar">
-          <button class="mini-chip log-filter-btn is-active" type="button" data-log-filter="all" aria-pressed="true">全部</button>
-          <button class="mini-chip log-filter-btn" type="button" data-log-filter="task" aria-pressed="false">任务中</button>
-          <button class="mini-chip log-filter-btn" type="button" data-log-filter="pixiv" aria-pressed="false">Pixiv</button>
-          <button class="mini-chip log-filter-btn" type="button" data-log-filter="error" aria-pressed="false">错误</button>
-        </div>
-        <div id="logList" class="log-list"></div>
-      </section>
+      </details>
     </main>
   </div>
 

@@ -3,7 +3,25 @@
   source: null,
   preview: null,
   recentImages: [],
+  imageQueue: [],
+  imageQueueIndex: -1,
+  queueEdits: {},
+  pendingQueueDraftFromPath: '',
   regions: [],
+  selectedRegionIndex: -1,
+  regionHistory: {
+    past: [],
+    future: [],
+  },
+  regionTransform: {
+    active: false,
+    index: -1,
+    mode: '',
+    handle: '',
+    startX: 0,
+    startY: 0,
+    initialRegion: null,
+  },
   dragging: false,
   dragStart: null,
   dragDepth: 0,
@@ -49,6 +67,37 @@
     pixivCanTestDirect: false,
     lastSavedSettingsSnapshot: '',
     lastExportedPath: '',
+    viewportZoom: {
+      source: 1,
+      result: 1,
+    },
+    viewportPan: {
+      active: false,
+      kind: '',
+      pointerId: -1,
+      startX: 0,
+      startY: 0,
+      scrollLeft: 0,
+      scrollTop: 0,
+    },
+    floatingWorkbench: {
+      dragging: false,
+      resizing: '',
+      startX: 0,
+      startY: 0,
+      left: 18,
+      top: 18,
+      width: 360,
+      height: 860,
+      startWidth: 360,
+      startHeight: 860,
+      originLeft: 18,
+      originTop: 18,
+      collapsed: false,
+      layoutWidePinned: false,
+      },
+    logsHidden: false,
+    spacePressed: false,
     logs: [],
   },
 };
@@ -61,7 +110,14 @@ let pixivCurrentPollHandle = null;
 let settingsSaveHandle = null;
 const PIXIV_AUTOSAVE_DELAY = 500;
 const DEFAULT_WATERMARK_SAMPLE = 'YourName 路 水印预览 2026';
-const WIDE_LAYOUT_MIN_DEVICE_PX = 1360;
+const WIDE_LAYOUT_MIN_WIDTH_PX = 1500;
+const WIDE_LAYOUT_MIN_HEIGHT_PX = 940;
+const FLOATING_WORKBENCH_MIN_WIDTH = 280;
+const FLOATING_WORKBENCH_MIN_HEIGHT = 220;
+const FLOATING_WORKBENCH_SNAP_GAP = 18;
+const VIEWPORT_ZOOM_MIN = 0.5;
+const VIEWPORT_ZOOM_MAX = 4;
+const VIEWPORT_ZOOM_STEP = 0.25;
 const PIXIV_TITLE_STYLE_OPTIONS = [
   { value: 'default', label: '默认' },
   { value: 'minimal', label: '简洁' },
@@ -82,8 +138,13 @@ const PIXIV_TITLE_STYLE_PROMPTS = {
 window.addEventListener('pywebviewready', maybeInit);
 window.addEventListener('DOMContentLoaded', maybeInit);
 window.addEventListener('resize', () => {
+  if (refs.floatingWorkbench && !state.ui.floatingWorkbench.dragging) {
+    state.ui.floatingWorkbench.width = refs.floatingWorkbench.offsetWidth || state.ui.floatingWorkbench.width;
+  }
   updateViewportLayoutMode();
-  renderRegions();
+  applyFloatingWorkbenchState();
+  applyViewportScale('source');
+  applyViewportScale('result');
 });
 
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
@@ -98,11 +159,42 @@ function updateViewportLayoutMode() {
     window.innerWidth || 0,
     document.documentElement?.clientWidth || 0,
   );
-  const deviceScale = window.devicePixelRatio || 1;
-  const effectiveWidth = cssWidth * deviceScale;
-  const wide = effectiveWidth >= WIDE_LAYOUT_MIN_DEVICE_PX;
+  const cssHeight = Math.max(
+    window.innerHeight || 0,
+    document.documentElement?.clientHeight || 0,
+  );
+  const wideEnough = cssWidth >= WIDE_LAYOUT_MIN_WIDTH_PX;
+  const tallEnough = cssHeight >= WIDE_LAYOUT_MIN_HEIGHT_PX;
+  const wide = wideEnough && tallEnough;
+  const short = wideEnough && !tallEnough;
   document.body.classList.toggle('layout-wide', wide);
-  document.body.classList.toggle('layout-narrow', !wide);
+  document.body.classList.toggle('layout-short', short);
+  document.body.classList.toggle('layout-narrow', !wide && !short);
+  syncFloatingWorkbenchLayoutMode(wide);
+}
+
+function syncFloatingWorkbenchLayoutMode(isWide) {
+  const panel = refs.floatingWorkbench;
+  if (!panel) {
+    return;
+  }
+  if (isWide) {
+    state.ui.floatingWorkbench.layoutWidePinned = true;
+    state.ui.floatingWorkbench.collapsed = false;
+    state.ui.floatingWorkbench.left = 0;
+    state.ui.floatingWorkbench.top = 0;
+    state.ui.floatingWorkbench.width = Math.min(560, Math.max(500, window.innerWidth * 0.24));
+    state.ui.floatingWorkbench.height = Math.max(680, window.innerHeight - 24);
+    applyFloatingWorkbenchState();
+    return;
+  }
+
+  if (state.ui.floatingWorkbench.layoutWidePinned) {
+    state.ui.floatingWorkbench.layoutWidePinned = false;
+    state.ui.floatingWorkbench.left = Math.min(state.ui.floatingWorkbench.left, Math.max(8, window.innerWidth - state.ui.floatingWorkbench.width - 8));
+    state.ui.floatingWorkbench.top = Math.min(state.ui.floatingWorkbench.top, Math.max(8, window.innerHeight - state.ui.floatingWorkbench.height - 8));
+    applyFloatingWorkbenchState();
+  }
 }
 
 function maybeInit() {
@@ -146,6 +238,7 @@ function maybeInit() {
 async function init() {
   cacheRefs();
   bindEvents();
+  syncViewportControls();
   showStartupOverlay('正在同步工作台状态', '正在读取最近图片、批量状态和 Pixiv 配置。', '阶段 2 / 3：同步配置');
 
   const result = await window.pywebview.api.get_bootstrap_data();
@@ -180,9 +273,23 @@ function cacheRefs() {
     'startupTitle',
     'startupMessage',
     'startupProgress',
+    'floatingWorkbench',
+    'floatingWorkbenchHandle',
+    'floatingWorkbenchResizer',
+    'floatingWorkbenchBottomResizer',
+    'toggleWorkbenchBtn',
+    'workspaceLogPanel',
+    'toggleLogsBtn',
     'sidebarTabbar',
     'currentFile',
     'recentList',
+    'queueList',
+    'queueHint',
+    'importQueueFolderBtn',
+    'clearQueueBtn',
+    'prevQueueBtn',
+    'nextQueueBtn',
+    'applyRegionsForwardBtn',
     'quickStartGuide',
     'quickGuideTitle',
     'quickGuideLead',
@@ -221,6 +328,8 @@ function cacheRefs() {
     'processOrder',
     'regionList',
     'undoRegionBtn',
+    'redoRegionBtn',
+    'deleteRegionBtn',
     'clearRegionsBtn',
     'upscaleEnabled',
     'upscaleEngine',
@@ -307,10 +416,16 @@ function cacheRefs() {
     'badgePreviewSize',
     'badgeRegionCount',
     'badgeStatus',
-    'sourceMeta',
-    'resultMeta',
-    'sourceViewport',
-    'resultViewport',
+      'sourceMeta',
+      'sourceZoomOutBtn',
+      'sourceZoomResetBtn',
+      'sourceZoomInBtn',
+      'resultMeta',
+      'resultZoomOutBtn',
+      'resultZoomResetBtn',
+      'resultZoomInBtn',
+      'sourceViewport',
+      'resultViewport',
     'sourceStage',
     'resultStage',
     'sourceImage',
@@ -339,18 +454,32 @@ function bindEvents() {
   };
 
   on(refs.openImageBtn, 'click', onOpenImage);
+  on(refs.importQueueFolderBtn, 'click', importQueueFolder);
+  on(refs.clearQueueBtn, 'click', clearImageQueue);
+  on(refs.prevQueueBtn, 'click', () => {
+    void selectImageQueueItem(state.imageQueueIndex - 1);
+  });
+  on(refs.nextQueueBtn, 'click', () => {
+    void selectImageQueueItem(state.imageQueueIndex + 1);
+  });
+  on(refs.applyRegionsForwardBtn, 'click', applyRegionsToRemainingQueueItems);
+  on(refs.floatingWorkbenchHandle, 'mousedown', onFloatingWorkbenchMouseDown);
+  on(refs.floatingWorkbenchResizer, 'mousedown', onFloatingWorkbenchResizeMouseDown);
+  on(refs.floatingWorkbenchBottomResizer, 'mousedown', onFloatingWorkbenchResizeHeightMouseDown);
+  on(refs.toggleWorkbenchBtn, 'click', toggleFloatingWorkbench);
+  on(refs.toggleLogsBtn, 'click', toggleWorkspaceLogs);
   on(refs.quickGuidePrimaryBtn, 'click', onQuickGuideAction);
   on(refs.quickGuideSecondaryBtn, 'click', onQuickGuideAction);
   on(refs.browseFontBtn, 'click', onBrowseFont);
   on(refs.browseModelBtn, 'click', onBrowseModel);
   on(refs.browseBatchInputBtn, 'click', () => {
-    void onBrowseDirectory(refs.batchInputDir, '宸查€夋嫨鎵归噺杈撳叆鐩綍');
+    void onBrowseDirectory(refs.batchInputDir, '已选择批量输入目录');
   });
   on(refs.browseBatchOutputBtn, 'click', () => {
-    void onBrowseDirectory(refs.batchOutputDir, '宸查€夋嫨鎵归噺杈撳嚭鐩綍');
+    void onBrowseDirectory(refs.batchOutputDir, '已选择批量输出目录');
   });
   on(refs.browsePixivProfileBtn, 'click', () => {
-    void onBrowseDirectory(refs.pixivProfileDir, '宸查€夋嫨 Pixiv 资料目录');
+    void onBrowseDirectory(refs.pixivProfileDir, '已选择 Pixiv 资料目录');
   });
   [refs.batchInputDir, refs.batchOutputDir].forEach((control) => {
     control?.addEventListener('input', updateBatchRecovery);
@@ -399,6 +528,8 @@ function bindEvents() {
   on(refs.exportBtn, 'click', onExport);
   on(refs.resetPreviewBtn, 'click', onResetPreview);
   on(refs.undoRegionBtn, 'click', undoLastRegion);
+  on(refs.redoRegionBtn, 'click', redoLastRegion);
+  on(refs.deleteRegionBtn, 'click', deleteSelectedRegion);
   on(refs.clearRegionsBtn, 'click', clearRegions);
   on(refs.copyLogBtn, 'click', onCopyLogs);
   on(refs.exportLogBtn, 'click', onExportLogs);
@@ -423,6 +554,9 @@ function bindEvents() {
   document.querySelectorAll('.fold-card[id]').forEach((details) => {
     details.addEventListener('toggle', () => {
       saveFoldState(details.id, details.open);
+      if (details.id === 'workspaceLogPanel') {
+        syncWorkspaceLogPanelState();
+      }
     });
   });
   on(refs.wmFontPreset, 'change', onWatermarkFontPresetChange);
@@ -446,9 +580,20 @@ function bindEvents() {
     control?.addEventListener('change', refreshExperienceUi);
   });
   on(refs.sourceStage, 'mousedown', onSourceMouseDown);
+  on(refs.sourceViewport, 'mousedown', (event) => onViewportMouseDown('source', event));
+  on(refs.resultViewport, 'mousedown', (event) => onViewportMouseDown('result', event));
+  on(refs.sourceViewport, 'wheel', (event) => onViewportWheel('source', event));
+  on(refs.resultViewport, 'wheel', (event) => onViewportWheel('result', event));
+  on(refs.sourceZoomOutBtn, 'click', () => stepViewportZoom('source', -1));
+  on(refs.sourceZoomResetBtn, 'click', () => resetViewportZoom('source'));
+  on(refs.sourceZoomInBtn, 'click', () => stepViewportZoom('source', 1));
+  on(refs.resultZoomOutBtn, 'click', () => stepViewportZoom('result', -1));
+  on(refs.resultZoomResetBtn, 'click', () => resetViewportZoom('result'));
+  on(refs.resultZoomInBtn, 'click', () => stepViewportZoom('result', 1));
   window.addEventListener('mousemove', onSourceMouseMove);
   window.addEventListener('mouseup', onSourceMouseUp);
   window.addEventListener('keydown', onWorkspaceKeyDown);
+  window.addEventListener('keyup', onWorkspaceKeyUp);
   window.addEventListener('beforeunload', () => {
     stopBatchPolling();
     stopPixivCurrentPolling();
@@ -613,13 +758,163 @@ function initUiPreferences() {
   try {
     compactMode = window.localStorage.getItem('imageWorkbench.compactMode') === 'true';
     logFilter = window.localStorage.getItem('imageWorkbench.logFilter') || 'all';
+    state.ui.logsHidden = window.localStorage.getItem('imageWorkbench.logsHidden') === 'true';
   } catch (error) {
     compactMode = false;
     logFilter = 'all';
+    state.ui.logsHidden = false;
   }
   applyCompactMode(compactMode);
+  restoreFloatingWorkbenchState();
+  applyWorkspaceLogVisibility();
   restoreFoldStates();
   setLogFilter(logFilter);
+}
+
+function clampFloatingWorkbenchPosition(left, top) {
+  const panel = refs.floatingWorkbench;
+  const width = Math.max(FLOATING_WORKBENCH_MIN_WIDTH, Number(state.ui.floatingWorkbench.width || panel?.offsetWidth || 360));
+  const height = Math.max(FLOATING_WORKBENCH_MIN_HEIGHT, Number(state.ui.floatingWorkbench.height || panel?.offsetHeight || 860));
+  const maxLeft = Math.max(8, window.innerWidth - width - 8);
+  const maxTop = Math.max(8, window.innerHeight - height - 8);
+  return {
+    left: Math.min(Math.max(8, left), maxLeft),
+    top: Math.min(Math.max(8, top), maxTop),
+  };
+}
+
+function applyFloatingWorkbenchState() {
+  const panel = refs.floatingWorkbench;
+  if (!panel) {
+    return;
+  }
+  const collapsed = !!state.ui.floatingWorkbench.collapsed;
+  const pinnedWide = !!state.ui.floatingWorkbench.layoutWidePinned;
+  const collapsedWidth = pinnedWide ? 92 : 112;
+  const collapsedHeight = pinnedWide ? 64 : 72;
+  const desiredWidth = Math.min(
+    collapsed
+      ? collapsedWidth
+      : Math.max(FLOATING_WORKBENCH_MIN_WIDTH, Number(state.ui.floatingWorkbench.width || panel.offsetWidth || 360)),
+    Math.max(collapsed ? collapsedWidth : FLOATING_WORKBENCH_MIN_WIDTH, window.innerWidth - 36),
+  );
+  const desiredHeight = Math.min(
+    collapsed
+      ? collapsedHeight
+      : Math.max(FLOATING_WORKBENCH_MIN_HEIGHT, Number(state.ui.floatingWorkbench.height || panel.offsetHeight || 860)),
+    Math.max(collapsed ? collapsedHeight : FLOATING_WORKBENCH_MIN_HEIGHT, window.innerHeight - 36),
+  );
+  state.ui.floatingWorkbench.width = desiredWidth;
+  state.ui.floatingWorkbench.height = desiredHeight;
+  panel.style.width = `${desiredWidth}px`;
+  panel.style.height = `${desiredHeight}px`;
+  const safe = clampFloatingWorkbenchPosition(
+    state.ui.floatingWorkbench.left,
+    state.ui.floatingWorkbench.top,
+  );
+  state.ui.floatingWorkbench.left = safe.left;
+  state.ui.floatingWorkbench.top = safe.top;
+  panel.style.left = `${safe.left}px`;
+  panel.style.top = `${safe.top}px`;
+  panel.classList.toggle('is-collapsed', collapsed);
+  const reservedWidth = collapsed ? collapsedWidth : desiredWidth;
+  document.documentElement.style.setProperty('--floating-workbench-reserved-width', `${reservedWidth}px`);
+  if (refs.toggleWorkbenchBtn) {
+    refs.toggleWorkbenchBtn.textContent = collapsed ? '展开' : '收起';
+  }
+}
+
+function persistFloatingWorkbenchState() {
+  try {
+    window.localStorage.setItem('imageWorkbench.workbench.left', String(Math.round(state.ui.floatingWorkbench.left)));
+    window.localStorage.setItem('imageWorkbench.workbench.top', String(Math.round(state.ui.floatingWorkbench.top)));
+    window.localStorage.setItem('imageWorkbench.workbench.width', String(Math.round(state.ui.floatingWorkbench.width || 360)));
+    window.localStorage.setItem('imageWorkbench.workbench.height', String(Math.round(state.ui.floatingWorkbench.height || 860)));
+    window.localStorage.setItem('imageWorkbench.workbench.collapsed', state.ui.floatingWorkbench.collapsed ? 'true' : 'false');
+  } catch (error) {
+    // ignore storage failures
+  }
+}
+
+function restoreFloatingWorkbenchState() {
+  try {
+    const left = Number(window.localStorage.getItem('imageWorkbench.workbench.left'));
+    const top = Number(window.localStorage.getItem('imageWorkbench.workbench.top'));
+    const width = Number(window.localStorage.getItem('imageWorkbench.workbench.width'));
+    const height = Number(window.localStorage.getItem('imageWorkbench.workbench.height'));
+    const collapsed = window.localStorage.getItem('imageWorkbench.workbench.collapsed');
+    if (Number.isFinite(left)) {
+      state.ui.floatingWorkbench.left = left;
+    }
+    if (Number.isFinite(top)) {
+      state.ui.floatingWorkbench.top = top;
+    }
+    if (Number.isFinite(width)) {
+      state.ui.floatingWorkbench.width = width;
+    }
+    if (Number.isFinite(height)) {
+      state.ui.floatingWorkbench.height = height;
+    }
+    if (collapsed !== null) {
+      state.ui.floatingWorkbench.collapsed = collapsed === 'true';
+    }
+  } catch (error) {
+    // ignore storage failures
+  }
+  applyFloatingWorkbenchState();
+}
+
+function toggleFloatingWorkbench() {
+  state.ui.floatingWorkbench.collapsed = !state.ui.floatingWorkbench.collapsed;
+  applyFloatingWorkbenchState();
+  persistFloatingWorkbenchState();
+}
+
+function snapFloatingWorkbenchToEdges() {
+  const panel = refs.floatingWorkbench;
+  if (!panel) {
+    return;
+  }
+  const width = panel.offsetWidth || state.ui.floatingWorkbench.width;
+  const height = panel.offsetHeight || state.ui.floatingWorkbench.height;
+  const maxLeft = Math.max(8, window.innerWidth - width - 8);
+  const maxTop = Math.max(8, window.innerHeight - height - 8);
+  let { left, top } = state.ui.floatingWorkbench;
+
+  if (Math.abs(left - 8) <= FLOATING_WORKBENCH_SNAP_GAP) {
+    left = 8;
+  } else if (Math.abs(left - maxLeft) <= FLOATING_WORKBENCH_SNAP_GAP) {
+    left = maxLeft;
+  }
+
+  if (Math.abs(top - 8) <= FLOATING_WORKBENCH_SNAP_GAP) {
+    top = 8;
+  } else if (Math.abs(top - maxTop) <= FLOATING_WORKBENCH_SNAP_GAP) {
+    top = maxTop;
+  }
+
+  state.ui.floatingWorkbench.left = left;
+  state.ui.floatingWorkbench.top = top;
+  applyFloatingWorkbenchState();
+}
+
+function applyWorkspaceLogVisibility() {
+  document.body.classList.toggle('logs-hidden', !!state.ui.logsHidden);
+  if (refs.toggleLogsBtn) {
+    refs.toggleLogsBtn.textContent = state.ui.logsHidden ? '日志：显示' : '日志：隐藏';
+  }
+  try {
+    window.localStorage.setItem('imageWorkbench.logsHidden', state.ui.logsHidden ? 'true' : 'false');
+  } catch (error) {
+    // ignore storage failures
+  }
+}
+
+function toggleWorkspaceLogs() {
+  state.ui.logsHidden = !state.ui.logsHidden;
+  applyWorkspaceLogVisibility();
+  applyViewportScale('source');
+  applyViewportScale('result');
 }
 
 function applyCompactMode(enabled) {
@@ -655,11 +950,20 @@ function restoreFoldStates() {
       const saved = window.localStorage.getItem(`imageWorkbench.fold.${details.id}`);
       if (saved !== null) {
         details.open = saved === 'true';
+      } else if (details.id === 'workspaceLogPanel') {
+        details.open = false;
       }
     } catch (error) {
       // ignore storage failures
     }
   });
+  syncWorkspaceLogPanelState();
+}
+
+function syncWorkspaceLogPanelState() {
+  const panel = refs.workspaceLogPanel;
+  const collapsed = !!panel && !panel.open;
+  document.body.classList.toggle('log-panel-collapsed', collapsed);
 }
 
 function setLogFilter(filter) {
@@ -1199,7 +1503,7 @@ function hydrateForm(config) {
   applyPixivCurrentSnapshot(state.bootstrap?.pixivCurrent || {}, { pushLogs: false });
   updateBatchRecovery();
   state.ui.lastSavedSettingsSnapshot = JSON.stringify(buildSettings());
-  updatePixivSaveState('配置改动会自动保存；敏感凭证不会落盘。', 'idle');
+  updatePixivSaveState('配置改动会自动保存；敏感凭证不会写进配置文件，但浏览器资料目录和调试快照会保留在本机。', 'idle');
 }
 
 function fillSelect(select, items) {
@@ -1308,12 +1612,12 @@ function updateWatermarkFontPreview() {
   let preview = '默认：Dancing Script';
 
   if (selected === '__custom__') {
-    preview = customPath ? `自定义：${basename(customPath)}` : '鑷畾涔夛細鏈€夋嫨瀛椾綋鏂囦欢';
+    preview = customPath ? `自定义：${basename(customPath)}` : '自定义：未选择字体文件';
   } else if (selected) {
-    preview = getSelectedOptionLabel(refs.wmFontPreset) || `棰勮锛?{basename(selected)}`;
+    preview = getSelectedOptionLabel(refs.wmFontPreset) || `预设：${basename(selected)}`;
   }
 
-  refs.wmFontPreview.textContent = `褰撳墠瀛椾綋锛?{preview}`;
+  refs.wmFontPreview.textContent = `当前字体：${preview}`;
   refs.wmFontPreview.title = customPath || selected || '默认：Dancing Script';
 }
 
@@ -1377,7 +1681,7 @@ async function refreshWatermarkFontSample() {
       return;
     }
     if (!result.ok) {
-      throw new Error(result.error || '瀛椾綋棰勮加载失败');
+    throw new Error(result.error || '字体预览加载失败');
     }
 
     const family = `wm-preview-${token}`;
@@ -1507,7 +1811,7 @@ async function onLoadOnlineFonts() {
       throw new Error(result.error || '读取在线字体失败');
     }
     renderOnlineFontList(result.items || []);
-    refs.fontCatalogStatus.textContent = result.message || `宸茶鍙?${result.items?.length || 0} 娆?Google Fonts 字体`;
+    refs.fontCatalogStatus.textContent = result.message || `已读取 ${result.items?.length || 0} 款 Google Fonts 字体`;
     pushLog(refs.fontCatalogStatus.textContent);
     updateStatusBadge('状态: 在线字体列表已更新');
   } catch (error) {
@@ -1534,7 +1838,7 @@ async function onDownloadOnlineFont() {
   }
 
   refs.downloadOnlineFontBtn.disabled = true;
-  refs.fontCatalogStatus.textContent = `姝ｅ湪涓嬭浇锛?{item.family}`;
+  refs.fontCatalogStatus.textContent = `正在下载：${item.family}`;
   try {
     const result = await window.pywebview.api.download_google_font(apiKey, item.family);
     if (!result.ok) {
@@ -1650,12 +1954,160 @@ function updateRecentImages(items) {
   renderRecentImages();
 }
 
+function normalizeQueueItems(paths = []) {
+  const seen = new Set();
+  return (Array.isArray(paths) ? paths : [])
+    .map((rawPath) => String(rawPath || '').trim())
+    .filter((rawPath) => {
+      if (!rawPath || seen.has(rawPath)) {
+        return false;
+      }
+      seen.add(rawPath);
+      return true;
+    })
+    .map((rawPath) => ({
+      path: rawPath,
+      fileName: basename(rawPath),
+      parent: String(rawPath).split(/[\\/]/).slice(-2, -1)[0] || '',
+    }));
+}
+
+function setImageQueue(paths = [], activePath = '') {
+  state.imageQueue = normalizeQueueItems(paths);
+  const targetPath = String(activePath || '').trim();
+  const index = state.imageQueue.findIndex((item) => item.path === targetPath);
+  state.imageQueueIndex = index >= 0 ? index : (state.imageQueue.length ? 0 : -1);
+  const validPaths = new Set(state.imageQueue.map((item) => item.path));
+  Object.keys(state.queueEdits || {}).forEach((path) => {
+    if (!validPaths.has(path)) {
+      delete state.queueEdits[path];
+    }
+  });
+  renderImageQueue();
+}
+
+function renderImageQueue() {
+  if (!refs.queueList) {
+    return;
+  }
+  refs.queueList.innerHTML = '';
+  if (!state.imageQueue.length) {
+    const empty = document.createElement('div');
+    empty.className = 'queue-item empty';
+    empty.innerHTML = '<strong>当前批次还是空的</strong><span>把多张图片一起拖进右侧工作台，这里就会变成当前批次列表。</span>';
+    refs.queueList.appendChild(empty);
+    if (refs.queueHint) {
+      refs.queueHint.textContent = '把多张图片一起拖进右侧工作台后，这里会显示本次待处理队列。';
+    }
+    if (refs.clearQueueBtn) {
+      refs.clearQueueBtn.disabled = true;
+    }
+    if (refs.prevQueueBtn) {
+      refs.prevQueueBtn.disabled = true;
+    }
+    if (refs.nextQueueBtn) {
+      refs.nextQueueBtn.disabled = true;
+    }
+    if (refs.applyRegionsForwardBtn) {
+      refs.applyRegionsForwardBtn.disabled = true;
+    }
+    return;
+  }
+
+  if (refs.queueHint) {
+    refs.queueHint.textContent = `当前批次共 ${state.imageQueue.length} 张，点击任意一张就能切到那张继续处理。`;
+  }
+  if (refs.clearQueueBtn) {
+    refs.clearQueueBtn.disabled = false;
+  }
+  if (refs.prevQueueBtn) {
+    refs.prevQueueBtn.disabled = state.imageQueueIndex <= 0;
+  }
+  if (refs.nextQueueBtn) {
+    refs.nextQueueBtn.disabled = state.imageQueueIndex < 0 || state.imageQueueIndex >= state.imageQueue.length - 1;
+  }
+  if (refs.applyRegionsForwardBtn) {
+    refs.applyRegionsForwardBtn.disabled = !state.regions.length || state.imageQueueIndex < 0 || state.imageQueueIndex >= state.imageQueue.length - 1;
+  }
+
+  state.imageQueue.forEach((item, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'queue-item';
+    button.classList.toggle('is-active', index === state.imageQueueIndex);
+    button.innerHTML = `<strong>${escapeHtml(item.fileName)}</strong><span>#${index + 1}${item.parent ? ` 路 ${escapeHtml(item.parent)}` : ''}</span>`;
+    button.addEventListener('click', () => {
+      void selectImageQueueItem(index);
+    });
+    refs.queueList.appendChild(button);
+  });
+}
+
+async function selectImageQueueItem(index) {
+  if (index < 0 || index >= state.imageQueue.length) {
+    return;
+  }
+  saveCurrentQueueEditState();
+  const previousPath = state.imageQueue[state.imageQueueIndex]?.path || state.source?.path || '';
+  const item = state.imageQueue[index];
+  state.imageQueueIndex = index;
+  state.pendingQueueDraftFromPath = previousPath && previousPath !== item.path ? previousPath : '';
+  renderImageQueue();
+  await loadImagePath(item.path, '从当前批次切换');
+}
+
+function clearImageQueue() {
+  state.imageQueue = [];
+  state.imageQueueIndex = -1;
+  state.queueEdits = {};
+  state.pendingQueueDraftFromPath = '';
+  renderImageQueue();
+  updateStatusBadge('状态: 当前批次已清空');
+}
+
+function applyRegionsToRemainingQueueItems() {
+  const currentPath = getCurrentQueuePath();
+  if (!currentPath || !state.source || !state.regions.length) {
+    updateStatusBadge('状态: 当前没有可应用到后续的选区');
+    return;
+  }
+  const startIndex = state.imageQueueIndex;
+  if (startIndex < 0 || startIndex >= state.imageQueue.length - 1) {
+    updateStatusBadge('状态: 后面已经没有待应用的图片了');
+    return;
+  }
+
+  saveCurrentQueueEditState();
+  const snapshot = {
+    regions: cloneRegions(),
+    selectedRegionIndex: state.selectedRegionIndex,
+    width: state.source.width,
+    height: state.source.height,
+  };
+
+  let applied = 0;
+  for (let index = startIndex + 1; index < state.imageQueue.length; index += 1) {
+    const item = state.imageQueue[index];
+    state.queueEdits[item.path] = {
+      regions: cloneRegions(snapshot.regions),
+      selectedRegionIndex: snapshot.selectedRegionIndex,
+      width: snapshot.width,
+      height: snapshot.height,
+    };
+    applied += 1;
+  }
+
+  renderImageQueue();
+  updateStatusBadge(`状态: 已把当前选区应用到后续 ${applied} 张图片`);
+  pushLog(`[Batch] 已把当前选区应用到后续 ${applied} 张图片`);
+}
+
 function renderRecentImages() {
   refs.recentList.innerHTML = '';
   if (!state.recentImages.length) {
     const empty = document.createElement('div');
     empty.className = 'recent-item empty';
-    empty.innerHTML = '<strong>杩樻病鏈夋渶杩戣褰</strong><span>閫変竴娆″浘鐗囧悗锛岃繖閲屼細淇濈暀鏈€杩?8 寮狅紝鏂逛究蹇€熷洖鍒板伐浣滅幇鍦恒€</span>';
+    empty.innerHTML = '<strong>还没有最近记录</strong><span>选过一次图片后，这里会保留最近 8 张，方便快速回到工作现场。</span>';
     refs.recentList.appendChild(empty);
     return;
   }
@@ -1678,15 +2130,15 @@ async function onOpenImage() {
 }
 
 async function loadImagePath(path, sourceLabel = '载入图片') {
-  updateStatusBadge('鐘舵€? 正在加载图片');
+  updateStatusBadge('状态: 正在加载图片');
   const result = await window.pywebview.api.open_image_path(path);
   handleLoadResult(result, sourceLabel);
 }
 
 async function loadImageFile(file, sourceLabel = '拖拽载入') {
   if (!file) {
-    pushLog('娌℃湁鍙取的拖拽文件');
-    updateStatusBadge('鐘舵€? 拖拽载入失败');
+    pushLog('没有可读取的拖拽文件');
+    updateStatusBadge('状态: 拖拽载入失败');
     return;
   }
 
@@ -1696,14 +2148,14 @@ async function loadImageFile(file, sourceLabel = '拖拽载入') {
     return;
   }
 
-  updateStatusBadge('鐘舵€? 正在读取拖拽图片');
+  updateStatusBadge('状态: 正在读取拖拽图片');
   try {
     const dataUrl = await fileToDataUrl(file);
     const result = await window.pywebview.api.open_image_blob(file.name || 'dropped-image', dataUrl);
     handleLoadResult(result, `${sourceLabel}（兼容模式）`);
   } catch (error) {
     pushLog(`拖拽载入失败: ${error?.message || error}`);
-    updateStatusBadge('鐘舵€? 拖拽载入失败');
+    updateStatusBadge('状态: 拖拽载入失败');
   }
 }
 
@@ -1711,17 +2163,23 @@ function handleLoadResult(result, sourceLabel) {
   if (!result.ok) {
     if (!result.cancelled) {
       pushLog(result.error || '加载图片失败');
-      updateStatusBadge('鐘舵€? 载入失败');
+    updateStatusBadge('状态: 载入失败');
     }
     return;
   }
 
-  state.regions = [];
-  renderRegionChips();
   updateSource(result.source);
   updatePreview(result.preview || result.source);
   updateRecentImages(result.recentImages || state.recentImages);
-  updateStatusBadge(`鐘舵€? ${result.message}`);
+  if (!state.imageQueue.length && result.source?.path) {
+    setImageQueue([result.source.path], result.source.path);
+  } else if (result.source?.path) {
+    const queuePaths = state.imageQueue.map((item) => item.path);
+    if (queuePaths.includes(result.source.path)) {
+      setImageQueue(queuePaths, result.source.path);
+    }
+  }
+  updateStatusBadge(`状态: ${result.message}`);
   pushLog(`${sourceLabel}: ${result.message}`);
 }
 
@@ -1753,6 +2211,34 @@ async function onBrowseDirectory(targetRef, label) {
   }
 }
 
+async function importQueueFolder() {
+  const currentDir = state.imageQueue[state.imageQueueIndex]?.path
+    ? String(state.imageQueue[state.imageQueueIndex].path).split(/[\\/]/).slice(0, -1).join('\\')
+    : '';
+  const directoryResult = await window.pywebview.api.choose_directory_dialog(currentDir);
+  if (!directoryResult.ok) {
+    return;
+  }
+
+  updateStatusBadge('状态: 正在读取文件夹里的图片');
+  const result = await window.pywebview.api.list_images_in_directory(directoryResult.path);
+  if (!result.ok) {
+    pushLog(result.error || '读取文件夹图片失败');
+    updateStatusBadge('状态: 读取文件夹图片失败');
+    return;
+  }
+  if (!Array.isArray(result.paths) || !result.paths.length) {
+    pushLog(result.message || '当前文件夹里没有可导入的图片');
+    updateStatusBadge(`状态: ${result.message || '当前文件夹里没有可导入的图片'}`);
+    return;
+  }
+
+  setImageQueue(result.paths, result.paths[0]);
+  await loadImagePath(result.paths[0], '从文件夹导入批次');
+  updateStatusBadge(`状态: 已导入文件夹，共 ${result.paths.length} 张`);
+  pushLog(`导入文件夹到当前批次: ${result.directory}（共 ${result.paths.length} 张）`);
+}
+
 async function onLoadPixivLlmModels() {
   refs.loadPixivLlmModelsBtn.disabled = true;
   updateStatusBadge('状态: 正在读取提供商模型列表');
@@ -1767,7 +2253,7 @@ async function onLoadPixivLlmModels() {
     updateStatusBadge(result.message || '状态: 已更新模型列表');
   } catch (error) {
     pushLog(`读取 Pixiv LLM 模型失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('鐘舵€? 读取模型列表失败');
+    updateStatusBadge('状态: 读取模型列表失败');
   } finally {
     syncPixivFieldState();
   }
@@ -1775,11 +2261,11 @@ async function onLoadPixivLlmModels() {
 
 async function onPreviewPixivSubmission() {
   refs.previewPixivBtn.disabled = true;
-  updateStatusBadge('鐘舵€? 正在生成当前 Pixiv 鎶曠棰勮');
+  updateStatusBadge('状态: 正在生成当前 Pixiv 投稿预览');
   const result = await window.pywebview.api.preview_pixiv_submission(buildSettings());
   if (!result.ok) {
-    pushLog(result.error || 'Pixiv 鎶曠棰勮生成失败');
-    updateStatusBadge('鐘舵€? Pixiv 鎶曠棰勮生成失败');
+    pushLog(result.error || 'Pixiv 投稿预览生成失败');
+    updateStatusBadge('状态: Pixiv 投稿预览生成失败');
     refs.previewPixivBtn.disabled = false;
     syncPixivFieldState();
     return;
@@ -1807,20 +2293,20 @@ async function onPreviewPixivSubmission() {
 
 async function onTestPixivUploadCurrent() {
   const actionLabel = getPixivCurrentActionLabel();
-  updateStatusBadge(`鐘舵€? 正在准备${actionLabel}`);
+  updateStatusBadge(`状态: 正在准备${actionLabel}`);
   try {
     const result = await window.pywebview.api.start_pixiv_upload_current(buildSettings());
     if (!result.ok) {
       (result.logs || []).forEach((message) => pushLog(message));
       pushLog(result.error || `Pixiv ${actionLabel}失败`);
-      updateStatusBadge(`鐘舵€? Pixiv ${actionLabel}失败`);
+      updateStatusBadge(`状态: Pixiv ${actionLabel}失败`);
       syncPixivFieldState();
       return;
     }
     applyPixivCurrentSnapshot(result);
   } catch (error) {
     pushLog(`Pixiv ${actionLabel}失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge(`鐘舵€? Pixiv ${actionLabel}失败`);
+    updateStatusBadge(`状态: Pixiv ${actionLabel}失败`);
   }
 }
 
@@ -1833,21 +2319,21 @@ function getFirstPixivTagHint() {
 
 async function onCapturePixivDebug() {
   refs.capturePixivDebugBtn.disabled = true;
-  updateStatusBadge('鐘舵€? 正在抓取 Pixiv 调试快照');
+  updateStatusBadge('状态: 正在抓取 Pixiv 脱敏调试快照');
   try {
     const result = await window.pywebview.api.capture_interactive_pixiv_debug(getFirstPixivTagHint());
     if (!result.ok) {
       (result.logs || []).forEach((message) => pushLog(message));
       pushLog(result.error || 'Pixiv 调试快照抓取失败');
-      updateStatusBadge('鐘舵€? Pixiv 调试快照抓取失败');
+      updateStatusBadge('状态: Pixiv 调试快照抓取失败');
       return;
     }
 
     (result.logs || []).forEach((message) => pushLog(message));
-    updateStatusBadge(`鐘舵€? ${result.message || '宸叉姄鍙?Pixiv 调试快照'}`);
+    updateStatusBadge(`状态: ${result.message || '已抓取 Pixiv 脱敏调试快照'}`);
   } catch (error) {
     pushLog(`Pixiv 调试快照抓取失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('鐘舵€? Pixiv 调试快照抓取失败');
+    updateStatusBadge('状态: Pixiv 调试快照抓取失败');
   } finally {
     syncPixivFieldState();
   }
@@ -1978,11 +2464,11 @@ async function onTestPixivDirect() {
 }
 async function onTestPixivLlm() {
   refs.testPixivLlmBtn.disabled = true;
-  updateStatusBadge('鐘舵€? 正在测试 Pixiv LLM');
+  updateStatusBadge('状态: 正在测试 Pixiv LLM');
   const result = await window.pywebview.api.test_pixiv_llm({ pixiv: readPixivSettings() });
   if (!result.ok) {
     pushLog(result.error || 'Pixiv LLM 测试失败');
-    updateStatusBadge('鐘舵€? Pixiv LLM 测试失败');
+      updateStatusBadge('状态: Pixiv LLM 测试失败');
     syncPixivFieldState();
     return;
   }
@@ -1996,7 +2482,7 @@ async function onTestPixivLlm() {
     pushLog(`[Pixiv LLM] Image tags: ${result.imageTags.join(', ')}`);
   }
   pushLog(`[Pixiv LLM] Combined tags: ${(result.tags || []).join(', ')}`);
-  updateStatusBadge(`鐘舵€? ${result.message}`);
+    updateStatusBadge(`状态: ${result.message}`);
   syncPixivFieldState();
 }
 
@@ -2067,18 +2553,18 @@ async function onStopBatch() {
     return;
   }
   refs.stopBatchBtn.disabled = true;
-  updateStatusBadge('鐘舵€? 姝ｅ湪璇锋眰鍋滄批量任务');
+  updateStatusBadge('状态: 正在请求停止批量任务');
   try {
     const result = await window.pywebview.api.stop_batch();
     if (!result.ok) {
-      throw new Error(result.error || '鍋滄批量任务失败');
+      throw new Error(result.error || '停止批量任务失败');
     }
     applyBatchSnapshot(result);
     pushLog(result.message || '已请求停止批量任务');
   } catch (error) {
     refs.stopBatchBtn.disabled = false;
-    pushLog(`鍋滄批量任务失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('鐘舵€? 鍋滄批量任务失败');
+    pushLog(`停止批量任务失败: ${error && error.message ? error.message : error}`);
+      updateStatusBadge('状态: 停止批量任务失败');
   }
 }
 
@@ -2088,18 +2574,18 @@ async function onRenderPreview() {
     return;
   }
 
-  updateStatusBadge('鐘舵€? 正在生成预览');
+  updateStatusBadge('状态: 正在生成预览');
   const result = await window.pywebview.api.render_preview(buildSettings());
   if (!result.ok) {
     pushLog(result.error || '预览失败');
-    updateStatusBadge('鐘舵€? 预览失败');
+      updateStatusBadge('状态: 预览失败');
     return;
   }
 
   updateSource(result.source);
   updatePreview(result.preview);
   (result.logs || []).forEach(pushLog);
-  updateStatusBadge(`鐘舵€? ${result.message}`);
+    updateStatusBadge(`状态: ${result.message}`);
 }
 
 async function onExport() {
@@ -2491,7 +2977,7 @@ async function pollPixivCurrentStatus() {
   } catch (error) {
     stopPixivCurrentPolling();
     pushLog(`当前图片 Pixiv 任务轮询失败: ${error && error.message ? error.message : error}`);
-    updateStatusBadge('鐘舵€? 当前图片 Pixiv 任务轮询失败');
+    updateStatusBadge('状态: 当前图片 Pixiv 任务轮询失败');
   } finally {
     state.pixivCurrent.polling = false;
   }
@@ -2512,7 +2998,7 @@ async function pollBatchStatus() {
     applyBatchSnapshot(result);
   } catch (error) {
     stopBatchPolling();
-    pushLog(`鎵归噺鐘舵€佽疆璇㈠け璐? ${error && error.message ? error.message : error}`);
+    pushLog(`批量状态轮询失败: ${error && error.message ? error.message : error}`);
     updateStatusBadge('状态: 批量状态轮询失败');
   } finally {
     state.batch.polling = false;
@@ -2522,6 +3008,14 @@ async function pollBatchStatus() {
 function updateSource(payload) {
   state.source = payload;
   state.ui.lastExportedPath = '';
+  state.ui.viewportZoom.source = 1;
+  const queueDraft = resolveQueueEditStateForSource(payload);
+  state.regions = cloneRegions(queueDraft.regions || []);
+  state.selectedRegionIndex = Number.isInteger(queueDraft.selectedRegionIndex)
+    ? Math.min(queueDraft.selectedRegionIndex, state.regions.length - 1)
+    : (state.regions.length ? 0 : -1);
+  state.regionHistory.past = [];
+  state.regionHistory.future = [];
   refs.currentFile.textContent = payload.fileName;
   refs.currentFile.title = payload.path || payload.fileName;
   refs.sourceMeta.textContent = `${payload.fileName} - ${payload.width} x ${payload.height}`;
@@ -2530,21 +3024,162 @@ function updateSource(payload) {
   refs.sourceImage.onload = () => {
     refs.sourceStage.classList.add('active');
     refs.sourceEmpty.classList.add('hidden');
-    renderRegions();
+    applyViewportScale('source', { recenter: true });
   };
+  renderRegionChips();
   refreshExperienceUi();
 }
 
 function updatePreview(payload) {
   state.preview = payload;
+  state.ui.viewportZoom.result = 1;
   refs.resultMeta.textContent = `${payload.fileName} - ${payload.width} x ${payload.height}`;
   refs.badgePreviewSize.textContent = `\u7ed3\u679c: ${payload.width} x ${payload.height}`;
   refs.resultImage.src = payload.src;
   refs.resultImage.onload = () => {
     refs.resultStage.classList.add('active');
     refs.resultEmpty.classList.add('hidden');
+    applyViewportScale('result', { recenter: true });
   };
   refreshExperienceUi();
+}
+
+function getViewportRefs(kind) {
+  if (kind === 'source') {
+    return {
+      viewport: refs.sourceViewport,
+      stage: refs.sourceStage,
+      image: refs.sourceImage,
+      resetBtn: refs.sourceZoomResetBtn,
+    };
+  }
+  return {
+    viewport: refs.resultViewport,
+    stage: refs.resultStage,
+    image: refs.resultImage,
+    resetBtn: refs.resultZoomResetBtn,
+  };
+}
+
+function getViewportPayload(kind) {
+  return kind === 'source' ? state.source : state.preview;
+}
+
+function clampZoom(value) {
+  return Math.min(VIEWPORT_ZOOM_MAX, Math.max(VIEWPORT_ZOOM_MIN, Number(value || 1)));
+}
+
+function getViewportZoom(kind) {
+  return clampZoom(state.ui.viewportZoom[kind] || 1);
+}
+
+function getViewportFitScale(kind) {
+  const payload = getViewportPayload(kind);
+  const { viewport } = getViewportRefs(kind);
+  if (!payload || !viewport) {
+    return 1;
+  }
+  const availableWidth = Math.max(1, viewport.clientWidth - 36);
+  const availableHeight = Math.max(1, viewport.clientHeight - 36);
+  return Math.min(availableWidth / payload.width, availableHeight / payload.height);
+}
+
+function getRenderedImageSize(kind) {
+  const payload = getViewportPayload(kind);
+  if (!payload) {
+    return null;
+  }
+  const fitScale = getViewportFitScale(kind);
+  const zoom = getViewportZoom(kind);
+  const width = Math.max(1, Math.round(payload.width * fitScale * zoom));
+  const height = Math.max(1, Math.round(payload.height * fitScale * zoom));
+  return { width, height };
+}
+
+function updateViewportZoomLabel(kind) {
+  const { resetBtn } = getViewportRefs(kind);
+  if (!resetBtn) {
+    return;
+  }
+  resetBtn.textContent = `${Math.round(getViewportZoom(kind) * 100)}%`;
+}
+
+function centerViewport(kind) {
+  const { viewport } = getViewportRefs(kind);
+  if (!viewport) {
+    return;
+  }
+  viewport.scrollLeft = Math.max(0, (viewport.scrollWidth - viewport.clientWidth) / 2);
+  viewport.scrollTop = Math.max(0, (viewport.scrollHeight - viewport.clientHeight) / 2);
+}
+
+function applyViewportScale(kind, options = {}) {
+  const { stage, image, viewport } = getViewportRefs(kind);
+  const payload = getViewportPayload(kind);
+  updateViewportZoomLabel(kind);
+  if (!stage || !image || !viewport || !payload) {
+    return;
+  }
+
+  const size = getRenderedImageSize(kind);
+  if (!size) {
+    return;
+  }
+  stage.style.setProperty('--stage-image-width', `${size.width}px`);
+  stage.style.setProperty('--stage-image-height', `${size.height}px`);
+  stage.style.width = `${size.width}px`;
+  stage.style.height = `${size.height}px`;
+
+  window.requestAnimationFrame(() => {
+    if (options.recenter) {
+      centerViewport(kind);
+    }
+    if (kind === 'source') {
+      renderRegions();
+    }
+  });
+}
+
+function setViewportZoom(kind, nextZoom, options = {}) {
+  const { viewport } = getViewportRefs(kind);
+  if (!viewport) {
+    return;
+  }
+  const previousWidth = Math.max(1, viewport.scrollWidth);
+  const previousHeight = Math.max(1, viewport.scrollHeight);
+  const anchorX = options.anchorClientX ?? (viewport.clientWidth / 2);
+  const anchorY = options.anchorClientY ?? (viewport.clientHeight / 2);
+  const anchorRatioX = (viewport.scrollLeft + anchorX) / previousWidth;
+  const anchorRatioY = (viewport.scrollTop + anchorY) / previousHeight;
+
+  state.ui.viewportZoom[kind] = clampZoom(nextZoom);
+  applyViewportScale(kind, { recenter: options.recenter });
+
+  window.requestAnimationFrame(() => {
+    if (options.recenter) {
+      return;
+    }
+    viewport.scrollLeft = Math.max(0, (viewport.scrollWidth * anchorRatioX) - anchorX);
+    viewport.scrollTop = Math.max(0, (viewport.scrollHeight * anchorRatioY) - anchorY);
+    if (kind === 'source') {
+      renderRegions();
+    }
+  });
+}
+
+function stepViewportZoom(kind, direction) {
+  setViewportZoom(kind, getViewportZoom(kind) + (VIEWPORT_ZOOM_STEP * direction));
+}
+
+function resetViewportZoom(kind) {
+  setViewportZoom(kind, 1, { recenter: true });
+}
+
+function syncViewportControls() {
+  ['source', 'result'].forEach((kind) => {
+    updateViewportZoomLabel(kind);
+  });
+  refs.sourceStage?.classList.toggle('is-space-pan', !!state.ui.spacePressed);
 }
 
 function buildSettings() {
@@ -2586,7 +3221,10 @@ function buildSettings() {
 }
 
 function onSourceMouseDown(event) {
-  if (!state.source || event.button !== 0) {
+  if (!state.source || event.button !== 0 || state.ui.spacePressed || state.ui.viewportPan.active) {
+    return;
+  }
+  if (event.target?.closest?.('.selection-box')) {
     return;
   }
 
@@ -2604,7 +3242,106 @@ function onSourceMouseDown(event) {
   setDragSelection(state.dragStart.x, state.dragStart.y, state.dragStart.x, state.dragStart.y, metrics);
 }
 
+function onFloatingWorkbenchMouseDown(event) {
+  if (event.button !== 0) {
+    return;
+  }
+  if (state.ui.floatingWorkbench.layoutWidePinned) {
+    return;
+  }
+  if (event.target?.closest('button')) {
+    return;
+  }
+  event.preventDefault();
+  state.ui.floatingWorkbench.dragging = true;
+  state.ui.floatingWorkbench.startX = event.clientX;
+  state.ui.floatingWorkbench.startY = event.clientY;
+  state.ui.floatingWorkbench.originLeft = state.ui.floatingWorkbench.left;
+  state.ui.floatingWorkbench.originTop = state.ui.floatingWorkbench.top;
+}
+
+function onFloatingWorkbenchResizeMouseDown(event) {
+  if (event.button !== 0) {
+    return;
+  }
+  if (state.ui.floatingWorkbench.layoutWidePinned) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  state.ui.floatingWorkbench.resizing = 'width';
+  state.ui.floatingWorkbench.startX = event.clientX;
+  state.ui.floatingWorkbench.startWidth = refs.floatingWorkbench?.offsetWidth || state.ui.floatingWorkbench.width;
+}
+
+function onFloatingWorkbenchResizeHeightMouseDown(event) {
+  if (event.button !== 0) {
+    return;
+  }
+  if (state.ui.floatingWorkbench.layoutWidePinned) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  state.ui.floatingWorkbench.resizing = 'height';
+  state.ui.floatingWorkbench.startY = event.clientY;
+  state.ui.floatingWorkbench.startHeight = refs.floatingWorkbench?.offsetHeight || state.ui.floatingWorkbench.height;
+}
+
+function onViewportMouseDown(kind, event) {
+  const payload = getViewportPayload(kind);
+  if (!payload) {
+    return;
+  }
+  const shouldPan = event.button === 1 || (event.button === 0 && state.ui.spacePressed);
+  if (!shouldPan) {
+    return;
+  }
+  event.preventDefault();
+  const viewport = kind === 'source' ? refs.sourceViewport : refs.resultViewport;
+  state.ui.viewportPan = {
+    active: true,
+    kind,
+    pointerId: event.button,
+    startX: event.clientX,
+    startY: event.clientY,
+    scrollLeft: viewport.scrollLeft,
+    scrollTop: viewport.scrollTop,
+  };
+  viewport.classList.add('is-panning');
+}
+
 function onSourceMouseMove(event) {
+  if (state.regionTransform.active) {
+    applyRegionTransform(event);
+    return;
+  }
+  if (state.ui.floatingWorkbench.resizing === 'width') {
+    state.ui.floatingWorkbench.width = state.ui.floatingWorkbench.startWidth + (event.clientX - state.ui.floatingWorkbench.startX);
+    applyFloatingWorkbenchState();
+    return;
+  }
+  if (state.ui.floatingWorkbench.resizing === 'height') {
+    state.ui.floatingWorkbench.height = state.ui.floatingWorkbench.startHeight + (event.clientY - state.ui.floatingWorkbench.startY);
+    applyFloatingWorkbenchState();
+    return;
+  }
+  if (state.ui.floatingWorkbench.dragging) {
+    state.ui.floatingWorkbench.left = state.ui.floatingWorkbench.originLeft + (event.clientX - state.ui.floatingWorkbench.startX);
+    state.ui.floatingWorkbench.top = state.ui.floatingWorkbench.originTop + (event.clientY - state.ui.floatingWorkbench.startY);
+    applyFloatingWorkbenchState();
+    return;
+  }
+  if (state.ui.viewportPan.active) {
+    const { kind, startX, startY, scrollLeft, scrollTop } = state.ui.viewportPan;
+    const viewport = kind === 'source' ? refs.sourceViewport : refs.resultViewport;
+    viewport.scrollLeft = scrollLeft - (event.clientX - startX);
+    viewport.scrollTop = scrollTop - (event.clientY - startY);
+    if (kind === 'source') {
+      renderRegions();
+    }
+    return;
+  }
   if (!state.dragging) {
     return;
   }
@@ -2618,6 +3355,37 @@ function onSourceMouseMove(event) {
 }
 
 function onSourceMouseUp(event) {
+  if (state.regionTransform.active) {
+    finishRegionTransform();
+    updateStatusBadge('状态: 选区已调整');
+    return;
+  }
+  if (state.ui.floatingWorkbench.resizing) {
+    state.ui.floatingWorkbench.resizing = '';
+    snapFloatingWorkbenchToEdges();
+    persistFloatingWorkbenchState();
+    return;
+  }
+  if (state.ui.floatingWorkbench.dragging) {
+    state.ui.floatingWorkbench.dragging = false;
+    snapFloatingWorkbenchToEdges();
+    persistFloatingWorkbenchState();
+    return;
+  }
+  if (state.ui.viewportPan.active) {
+    const viewport = state.ui.viewportPan.kind === 'source' ? refs.sourceViewport : refs.resultViewport;
+    viewport.classList.remove('is-panning');
+    state.ui.viewportPan = {
+      active: false,
+      kind: '',
+      pointerId: -1,
+      startX: 0,
+      startY: 0,
+      scrollLeft: 0,
+      scrollTop: 0,
+    };
+    return;
+  }
   if (!state.dragging) {
     return;
   }
@@ -2637,12 +3405,29 @@ function onSourceMouseUp(event) {
     return;
   }
 
-  state.regions.push(region);
-  renderRegionChips();
-  renderRegions();
-  updateRegionBadge();
+  commitRegionMutation(() => {
+    state.regions.push(region);
+    state.selectedRegionIndex = state.regions.length - 1;
+  });
   updateStatusBadge('状态: 选区已更新');
   pushLog(`添加选区: (${region.join(', ')})`);
+}
+
+function onViewportWheel(kind, event) {
+  if (!(event.ctrlKey || event.metaKey)) {
+    return;
+  }
+  event.preventDefault();
+  const direction = event.deltaY > 0 ? -1 : 1;
+  const rect = event.currentTarget.getBoundingClientRect();
+  setViewportZoom(
+    kind,
+    getViewportZoom(kind) + (VIEWPORT_ZOOM_STEP * direction),
+    {
+      anchorClientX: event.clientX - rect.left,
+      anchorClientY: event.clientY - rect.top,
+    },
+  );
 }
 
 function setDragSelection(x1, y1, x2, y2, metrics) {
@@ -2659,27 +3444,44 @@ function setDragSelection(x1, y1, x2, y2, metrics) {
 function renderRegionChips() {
   refs.regionList.innerHTML = '';
   if (!state.regions.length) {
-    refs.regionList.innerHTML = '<span class="hint">杩樻病鏈夐€夊尯锛岀洿鎺ュ湪婧愬浘涓婃嫋涓€鍧楀嚭鏉ュ氨琛屻€</span>';
+    refs.regionList.innerHTML = '<span class="hint">还没有选区，直接在源图上拖一块出来就行。</span>';
   } else {
     state.regions.forEach((region, index) => {
       const chip = document.createElement('div');
       chip.className = 'region-chip';
+      chip.classList.toggle('is-active', index === state.selectedRegionIndex);
       chip.innerHTML = `<span>#${index + 1} ${region.join(', ')}</span>`;
+      chip.addEventListener('click', () => {
+        state.selectedRegionIndex = index;
+        renderRegionChips();
+        renderRegions();
+        updateStatusBadge(`状态: 已选中选区 #${index + 1}`);
+      });
 
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = '脳';
+      button.textContent = '×';
       button.addEventListener('click', () => {
-        state.regions.splice(index, 1);
-        renderRegionChips();
-        renderRegions();
-        updateRegionBadge();
+        commitRegionMutation(() => {
+          state.regions.splice(index, 1);
+        });
+        updateStatusBadge(`状态: 已删除选区 #${index + 1}`);
+        pushLog(`删除选区: (${region.join(', ')})`);
       });
       chip.appendChild(button);
       refs.regionList.appendChild(chip);
     });
   }
   updateRegionBadge();
+  if (refs.undoRegionBtn) {
+    refs.undoRegionBtn.disabled = !state.regionHistory.past.length;
+  }
+  if (refs.redoRegionBtn) {
+    refs.redoRegionBtn.disabled = !state.regionHistory.future.length;
+  }
+  if (refs.deleteRegionBtn) {
+    refs.deleteRegionBtn.disabled = state.selectedRegionIndex < 0 || !state.regions.length;
+  }
   refreshExperienceUi();
 }
 
@@ -2698,11 +3500,35 @@ function renderRegions() {
     const [x1, y1, x2, y2] = region;
     const box = document.createElement('div');
     box.className = 'selection-box';
+    const isActive = index === state.selectedRegionIndex;
+    box.classList.toggle('is-active', isActive);
     box.dataset.index = String(index + 1);
     box.style.left = `${(x1 / state.source.width) * metrics.rect.width}px`;
     box.style.top = `${(y1 / state.source.height) * metrics.rect.height}px`;
     box.style.width = `${((x2 - x1) / state.source.width) * metrics.rect.width}px`;
     box.style.height = `${((y2 - y1) / state.source.height) * metrics.rect.height}px`;
+    box.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.selectedRegionIndex = index;
+      startRegionTransform(index, 'move', '', event);
+      renderRegionChips();
+      renderRegions();
+      updateStatusBadge(`状态: 已选中选区 #${index + 1}`);
+    });
+    if (isActive) {
+      ['nw', 'ne', 'sw', 'se'].forEach((handle) => {
+        const handleNode = document.createElement('div');
+        handleNode.className = 'selection-handle';
+        handleNode.dataset.handle = handle;
+        handleNode.addEventListener('mousedown', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          startRegionTransform(index, 'resize', handle, event);
+        });
+        box.appendChild(handleNode);
+      });
+    }
     refs.selectionLayer.appendChild(box);
   });
 }
@@ -2742,28 +3568,149 @@ function rectToImageRegion(start, end, metrics) {
   ];
 }
 
-function undoLastRegion() {
-  if (!state.regions.length) {
-    updateStatusBadge('鐘舵€? 娌℃湁鍙挙閿€鐨勯€夊尯');
+function startRegionTransform(index, mode, handle, event) {
+  const region = state.regions[index];
+  if (!region) {
     return;
   }
-  const removed = state.regions.pop();
+  pushRegionHistorySnapshot();
+  state.regionHistory.future = [];
+  state.regionTransform = {
+    active: true,
+    index,
+    mode,
+    handle,
+    startX: event.clientX,
+    startY: event.clientY,
+    initialRegion: [...region],
+  };
+}
+
+function applyRegionTransform(event) {
+  if (!state.regionTransform.active || !state.source) {
+    return false;
+  }
+  const transform = state.regionTransform;
+  const metrics = imageMetrics();
+  if (!metrics || !transform.initialRegion) {
+    return false;
+  }
+  const deltaX = ((event.clientX - transform.startX) / metrics.rect.width) * state.source.width;
+  const deltaY = ((event.clientY - transform.startY) / metrics.rect.height) * state.source.height;
+  const [x1, y1, x2, y2] = transform.initialRegion;
+  const minSize = 8;
+  let next = [...transform.initialRegion];
+
+  if (transform.mode === 'move') {
+    const width = x2 - x1;
+    const height = y2 - y1;
+    const left = clampInt(x1 + deltaX, 0, Math.max(0, state.source.width - width));
+    const top = clampInt(y1 + deltaY, 0, Math.max(0, state.source.height - height));
+    next = [left, top, left + width, top + height];
+  } else if (transform.mode === 'resize') {
+    let left = x1;
+    let top = y1;
+    let right = x2;
+    let bottom = y2;
+    if (transform.handle.includes('n')) {
+      top = clampInt(y1 + deltaY, 0, bottom - minSize);
+    }
+    if (transform.handle.includes('s')) {
+      bottom = clampInt(y2 + deltaY, top + minSize, state.source.height);
+    }
+    if (transform.handle.includes('w')) {
+      left = clampInt(x1 + deltaX, 0, right - minSize);
+    }
+    if (transform.handle.includes('e')) {
+      right = clampInt(x2 + deltaX, left + minSize, state.source.width);
+    }
+    next = [left, top, right, bottom];
+  }
+
+  state.regions[transform.index] = next;
   renderRegionChips();
   renderRegions();
-  updateStatusBadge('鐘舵€? 宸叉挙閿€涓婁竴涓€夊尯');
-  pushLog(`撤销选区: (${removed.join(', ')})`);
+  return true;
+}
+
+function finishRegionTransform() {
+  if (!state.regionTransform.active) {
+    return;
+  }
+  state.regionTransform = {
+    active: false,
+    index: -1,
+    mode: '',
+    handle: '',
+    startX: 0,
+    startY: 0,
+    initialRegion: null,
+  };
+  saveCurrentQueueEditState();
+}
+
+function undoLastRegion() {
+  if (!state.regionHistory.past.length) {
+    updateStatusBadge('状态: 没有可撤销的选区');
+    return;
+  }
+  state.regionHistory.future.push({
+    regions: cloneRegions(),
+    selectedRegionIndex: state.selectedRegionIndex,
+  });
+  const snapshot = state.regionHistory.past.pop();
+  state.regions = cloneRegions(snapshot.regions);
+  state.selectedRegionIndex = Number.isInteger(snapshot.selectedRegionIndex) ? snapshot.selectedRegionIndex : (state.regions.length - 1);
+  renderRegionChips();
+  renderRegions();
+  updateStatusBadge('状态: 已撤销上一步选区编辑');
+  pushLog('撤销了一次选区编辑');
+}
+
+function redoLastRegion() {
+  if (!state.regionHistory.future.length) {
+    updateStatusBadge('状态: 没有可重做的选区编辑');
+    return;
+  }
+  state.regionHistory.past.push({
+    regions: cloneRegions(),
+    selectedRegionIndex: state.selectedRegionIndex,
+  });
+  const snapshot = state.regionHistory.future.pop();
+  state.regions = cloneRegions(snapshot.regions);
+  state.selectedRegionIndex = Number.isInteger(snapshot.selectedRegionIndex) ? snapshot.selectedRegionIndex : (state.regions.length - 1);
+  renderRegionChips();
+  renderRegions();
+  updateStatusBadge('状态: 已重做选区编辑');
+  pushLog('重做了一次选区编辑');
+}
+
+function deleteSelectedRegion() {
+  if (state.selectedRegionIndex < 0 || state.selectedRegionIndex >= state.regions.length) {
+    updateStatusBadge('状态: 还没有选中要删除的选区');
+    return;
+  }
+  const index = state.selectedRegionIndex;
+  const removed = state.regions[index];
+  commitRegionMutation(() => {
+    state.regions.splice(index, 1);
+    state.selectedRegionIndex = Math.min(index, state.regions.length - 1);
+  });
+  updateStatusBadge(`状态: 已删除选区 #${index + 1}`);
+  pushLog(`删除选区: (${removed.join(', ')})`);
 }
 
 function clearRegions() {
   if (!state.regions.length) {
-    updateStatusBadge('鐘舵€? 当前没有选区');
+    updateStatusBadge('状态: 当前没有选区');
     return;
   }
-  state.regions = [];
-  renderRegionChips();
-  renderRegions();
+  commitRegionMutation(() => {
+    state.regions = [];
+    state.selectedRegionIndex = -1;
+  });
   updateStatusBadge('状态: 选区已清空');
-  pushLog('宸叉竻绌哄叏閮ㄩ€夊尯');
+  pushLog('已清空全部选区');
 }
 
 function onWorkspaceKeyDown(event) {
@@ -2792,9 +3739,32 @@ function onWorkspaceKeyDown(event) {
     return;
   }
 
+  if (event.code === 'Space') {
+    event.preventDefault();
+    state.ui.spacePressed = true;
+    syncViewportControls();
+    return;
+  }
+
   if (event.key === 'Delete' || event.key === 'Backspace') {
     event.preventDefault();
+    if (state.selectedRegionIndex >= 0) {
+      deleteSelectedRegion();
+    } else {
+      undoLastRegion();
+    }
+    return;
+  }
+
+  if (modifier && key === 'z' && !event.shiftKey) {
+    event.preventDefault();
     undoLastRegion();
+    return;
+  }
+
+  if ((modifier && key === 'y') || (modifier && event.shiftKey && key === 'z')) {
+    event.preventDefault();
+    redoLastRegion();
     return;
   }
 
@@ -2803,6 +3773,14 @@ function onWorkspaceKeyDown(event) {
     state.dragDepth = 0;
     setDropReady(false);
   }
+}
+
+function onWorkspaceKeyUp(event) {
+  if (event.code !== 'Space') {
+    return;
+  }
+  state.ui.spacePressed = false;
+  syncViewportControls();
 }
 
 function onWorkspaceDragEnter(event) {
@@ -2847,14 +3825,26 @@ async function onWorkspaceDrop(event) {
   setDropReady(false);
 
   const files = Array.from(event.dataTransfer?.files || []);
-  const imageFile = files.find((file) => isSupportedImagePath(file.path || file.name));
-  if (!imageFile) {
+  const imageFiles = files.filter((file) => isSupportedImagePath(file.path || file.name));
+  if (!imageFiles.length) {
     pushLog('拖入的文件不是受支持的图片格式');
-    updateStatusBadge('鐘舵€? 拖拽文件不受支持');
+    updateStatusBadge('状态: 拖拽文件不受支持');
     return;
   }
 
-  await loadImageFile(imageFile, '拖拽载入');
+  const queuePaths = imageFiles
+    .map((file) => String(file.path || '').trim())
+    .filter(Boolean);
+
+  if (queuePaths.length > 1) {
+    setImageQueue(queuePaths, queuePaths[0]);
+    await loadImagePath(queuePaths[0], '批量拖拽载入');
+    updateStatusBadge(`状态: 已载入批次首张，共 ${queuePaths.length} 张`);
+    pushLog(`批量拖拽载入: 共 ${queuePaths.length} 张，当前打开 ${basename(queuePaths[0])}`);
+    return;
+  }
+
+  await loadImageFile(imageFiles[0], '拖拽载入');
 }
 
 function hasFileTransfer(event) {
@@ -2879,6 +3869,19 @@ function cancelActiveDrag() {
   state.dragging = false;
   state.dragStart = null;
   refs.dragSelection.classList.add('hidden');
+  if (state.ui.viewportPan.active) {
+    const viewport = state.ui.viewportPan.kind === 'source' ? refs.sourceViewport : refs.resultViewport;
+    viewport?.classList.remove('is-panning');
+    state.ui.viewportPan = {
+      active: false,
+      kind: '',
+      pointerId: -1,
+      startX: 0,
+      startY: 0,
+      scrollLeft: 0,
+      scrollTop: 0,
+    };
+  }
 }
 
 function setDropReady(active) {
@@ -2911,6 +3914,112 @@ function updateStatusBadge(text) {
 
 function updateRegionBadge() {
   refs.badgeRegionCount.textContent = `选区: ${state.regions.length}`;
+}
+
+function cloneRegions(regions = state.regions) {
+  return (regions || []).map((region) => Array.isArray(region) ? [...region] : region);
+}
+
+function scaleRegionsForImage(regions, fromWidth, fromHeight, toWidth, toHeight) {
+  if (!Array.isArray(regions) || !regions.length || !fromWidth || !fromHeight || !toWidth || !toHeight) {
+    return [];
+  }
+  return regions.map((region) => ([
+    clampInt((region[0] / fromWidth) * toWidth, 0, toWidth),
+    clampInt((region[1] / fromHeight) * toHeight, 0, toHeight),
+    clampInt((region[2] / fromWidth) * toWidth, 0, toWidth),
+    clampInt((region[3] / fromHeight) * toHeight, 0, toHeight),
+  ]));
+}
+
+function getCurrentQueuePath() {
+  const currentPath = String(state.source?.path || '').trim();
+  if (!currentPath) {
+    return '';
+  }
+  return state.imageQueue.some((item) => item.path === currentPath) ? currentPath : '';
+}
+
+function saveCurrentQueueEditState() {
+  const queuePath = getCurrentQueuePath();
+  if (!queuePath || !state.source) {
+    return;
+  }
+  if (!state.regions.length) {
+    delete state.queueEdits[queuePath];
+    return;
+  }
+  state.queueEdits[queuePath] = {
+    regions: cloneRegions(),
+    selectedRegionIndex: state.selectedRegionIndex,
+    width: state.source.width,
+    height: state.source.height,
+  };
+}
+
+function resolveQueueEditStateForSource(payload) {
+  const sourcePath = String(payload?.path || '').trim();
+  if (!sourcePath || !state.imageQueue.some((item) => item.path === sourcePath)) {
+    state.pendingQueueDraftFromPath = '';
+    return { regions: [], selectedRegionIndex: -1 };
+  }
+
+  const existing = state.queueEdits[sourcePath];
+  if (existing) {
+    state.pendingQueueDraftFromPath = '';
+    return {
+      regions: scaleRegionsForImage(existing.regions, existing.width, existing.height, payload.width, payload.height),
+      selectedRegionIndex: existing.selectedRegionIndex,
+    };
+  }
+
+  const draftFromPath = String(state.pendingQueueDraftFromPath || '').trim();
+  const draftSource = draftFromPath ? state.queueEdits[draftFromPath] : null;
+  state.pendingQueueDraftFromPath = '';
+  if (!draftSource || !Array.isArray(draftSource.regions) || !draftSource.regions.length) {
+    return { regions: [], selectedRegionIndex: -1 };
+  }
+
+  const regions = scaleRegionsForImage(
+    draftSource.regions,
+    draftSource.width,
+    draftSource.height,
+    payload.width,
+    payload.height,
+  );
+  state.queueEdits[sourcePath] = {
+    regions: cloneRegions(regions),
+    selectedRegionIndex: draftSource.selectedRegionIndex,
+    width: payload.width,
+    height: payload.height,
+  };
+  pushLog(`[Batch] 已按上一张的选区为 ${payload.fileName} 生成一版可微调初稿`);
+  return {
+    regions,
+    selectedRegionIndex: draftSource.selectedRegionIndex,
+  };
+}
+
+function pushRegionHistorySnapshot() {
+  state.regionHistory.past.push({
+    regions: cloneRegions(),
+    selectedRegionIndex: state.selectedRegionIndex,
+  });
+  if (state.regionHistory.past.length > 60) {
+    state.regionHistory.past.shift();
+  }
+}
+
+function commitRegionMutation(mutator) {
+  pushRegionHistorySnapshot();
+  state.regionHistory.future = [];
+  mutator();
+  if (state.selectedRegionIndex >= state.regions.length) {
+    state.selectedRegionIndex = state.regions.length - 1;
+  }
+  saveCurrentQueueEditState();
+  renderRegionChips();
+  renderRegions();
 }
 
 function showStartupOverlay(title, message, progress = '') {
