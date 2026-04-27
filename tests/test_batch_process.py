@@ -19,6 +19,15 @@ class _FakeWatermarkProcessor:
 
 
 class BatchProcessRegressionTests(unittest.TestCase):
+    def test_hidden_subprocess_kwargs_hide_windows_console(self):
+        kwargs = main._hidden_subprocess_kwargs()
+        if main.os.name != "nt":
+            self.assertEqual(kwargs, {})
+            return
+
+        self.assertEqual(kwargs["creationflags"] & main.subprocess.CREATE_NO_WINDOW, main.subprocess.CREATE_NO_WINDOW)
+        self.assertTrue(kwargs["startupinfo"].dwFlags & main.subprocess.STARTF_USESHOWWINDOW)
+
     def test_batch_process_uses_actual_output_extension_and_keeps_source_file(self):
         with tempfile.TemporaryDirectory() as input_dir_name, tempfile.TemporaryDirectory() as output_dir_name:
             input_dir = Path(input_dir_name)

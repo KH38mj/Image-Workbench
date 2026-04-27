@@ -22,6 +22,20 @@ import requests
 import numpy as np
 
 
+def _hidden_subprocess_kwargs() -> dict:
+    """Hide child console windows when the GUI launches CLI helpers on Windows."""
+    if os.name != "nt":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 # ============== 瓒呭垎閰嶇疆 ==============
 
 UPSCALE_ENGINES = {
@@ -677,7 +691,10 @@ class RealESRGANUpscaler:
             from realesrgan import RealESRGANer
         except ImportError:
             print("[瀹夎] 姝ｅ湪瀹夎 Real-ESRGAN...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "realesrgan", "basicsr"])
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-q", "realesrgan", "basicsr"],
+                **_hidden_subprocess_kwargs(),
+            )
             self._ensure_torchvision_compat()
             from basicsr.archs.rrdbnet_arch import RRDBNet
             from realesrgan import RealESRGANer
@@ -831,7 +848,10 @@ class Final2xUpscaler:
         """纭繚 Final2x-core 鍙敤銆?"""
         if importlib.util.find_spec("Final2x_core") is None and importlib.util.find_spec("cccv") is None:
             print("[瀹夎] 姝ｅ湪瀹夎 Final2x-core锛圧eal-CUGAN/APISR 鍚庣锛?..")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "Final2x-core"])
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-q", "Final2x-core"],
+                **_hidden_subprocess_kwargs(),
+            )
 
         self.runner_cmd = self._resolve_runner()
         return importlib.util.find_spec("cccv") is not None or self.runner_cmd is not None
@@ -857,6 +877,7 @@ class Final2xUpscaler:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
+                    **_hidden_subprocess_kwargs(),
                 )
                 if result.returncode in (0, 1):
                     return cmd
@@ -1035,7 +1056,14 @@ class Final2xUpscaler:
                 config["use_tile"] = True
 
             cmd = self.runner_cmd + ["-j", json.dumps(config, ensure_ascii=False), "-n"]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                **_hidden_subprocess_kwargs(),
+            )
             if result.stdout:
                 print(result.stdout.strip())
             if result.returncode != 0:
