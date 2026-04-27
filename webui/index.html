@@ -72,6 +72,7 @@
             </div>
             <div class="button-row">
               <button id="applyRegionsForwardBtn" class="button accent" type="button">当前选区应用到后续</button>
+              <button id="exportQueueZipBtn" class="button solid" type="button">导出批次 ZIP</button>
             </div>
             <div class="queue-list" id="queueList"></div>
           </section>
@@ -108,6 +109,7 @@
               <button id="quickPixivUploadBtn" class="button solid">单图一键草稿</button>
             </div>
             <p class="support-copy" id="quickActionHint">会对当前工作区里这张图执行处理流程，并按 Pixiv 设置继续投稿，不需要批量目录。</p>
+            <p class="support-copy privacy-copy">图片处理默认在本机完成；只有你主动使用 Pixiv 上传或 LLM 看图/整理标签时，才会把必要内容交给外部服务。</p>
             <div class="shortcut-strip">
               <span class="shortcut-chip"><kbd>Ctrl</kbd><kbd>O</kbd> 选图</span>
               <span class="shortcut-chip"><kbd>Ctrl</kbd><kbd>Enter</kbd> 预览</span>
@@ -256,11 +258,46 @@
                 <select id="processOrder"></select>
               </label>
             </div>
+            <div class="field-grid region-detail-grid">
+              <label class="field">
+                <span>新选区形状</span>
+                <select id="regionShape">
+                  <option value="rect">矩形</option>
+                  <option value="rounded">圆角矩形</option>
+                  <option value="ellipse">椭圆</option>
+                  <option value="triangle">三角形</option>
+                  <option value="brush">画笔涂抹</option>
+                </select>
+              </label>
+              <label class="switch card-switch field">
+                <input type="checkbox" id="regionLockAspect">
+                <span>锁定比例绘制</span>
+              </label>
+              <label class="field">
+                <span>画笔大小</span>
+                <input type="range" id="regionBrushSize" min="6" max="96" value="32">
+              </label>
+              <label class="field">
+                <span>选中区域效果</span>
+                <select id="regionMode">
+                  <option value="inherit">跟随全局</option>
+                  <option value="pixelate">马赛克</option>
+                  <option value="blur">模糊</option>
+                </select>
+              </label>
+              <label class="field full">
+                <span id="regionStrengthLabel">选中区域强度</span>
+                <input type="range" id="regionStrength" min="2" max="50" value="10">
+                <span class="field-note support-copy" id="regionStrengthHint">选中区域后，可单独覆盖马赛克块大小或模糊半径。</span>
+              </label>
+            </div>
             <div class="region-toolbar">
               <span class="hint">在右侧源图上拖拽选择区域</span>
               <div class="region-actions">
                 <button id="undoRegionBtn" class="button ghost">撤销上一个</button>
                 <button id="redoRegionBtn" class="button ghost">重做</button>
+                <button id="copyRegionBtn" class="button ghost">复制选区</button>
+                <button id="pasteRegionBtn" class="button ghost">粘贴选区</button>
                 <button id="deleteRegionBtn" class="button ghost">删除选中</button>
                 <button id="clearRegionsBtn" class="button ghost">清空选区</button>
               </div>

@@ -9,6 +9,7 @@
   pendingQueueDraftFromPath: '',
   regions: [],
   selectedRegionIndex: -1,
+  regionClipboard: null,
   regionHistory: {
     past: [],
     future: [],
@@ -24,6 +25,7 @@
   },
   dragging: false,
   dragStart: null,
+  brushDraft: null,
   dragDepth: 0,
   batch: {
     jobId: 0,
@@ -290,6 +292,7 @@ function cacheRefs() {
     'prevQueueBtn',
     'nextQueueBtn',
     'applyRegionsForwardBtn',
+    'exportQueueZipBtn',
     'quickStartGuide',
     'quickGuideTitle',
     'quickGuideLead',
@@ -326,9 +329,18 @@ function cacheRefs() {
     'mosaicPixelSize',
     'mosaicBlurRadius',
     'processOrder',
+    'regionShape',
+    'regionLockAspect',
+    'regionBrushSize',
+    'regionMode',
+    'regionStrength',
+    'regionStrengthLabel',
+    'regionStrengthHint',
     'regionList',
     'undoRegionBtn',
     'redoRegionBtn',
+    'copyRegionBtn',
+    'pasteRegionBtn',
     'deleteRegionBtn',
     'clearRegionsBtn',
     'upscaleEnabled',
@@ -463,6 +475,7 @@ function bindEvents() {
     void selectImageQueueItem(state.imageQueueIndex + 1);
   });
   on(refs.applyRegionsForwardBtn, 'click', applyRegionsToRemainingQueueItems);
+  on(refs.exportQueueZipBtn, 'click', onExportQueueZip);
   on(refs.floatingWorkbenchHandle, 'mousedown', onFloatingWorkbenchMouseDown);
   on(refs.floatingWorkbenchResizer, 'mousedown', onFloatingWorkbenchResizeMouseDown);
   on(refs.floatingWorkbenchBottomResizer, 'mousedown', onFloatingWorkbenchResizeHeightMouseDown);
@@ -529,6 +542,8 @@ function bindEvents() {
   on(refs.resetPreviewBtn, 'click', onResetPreview);
   on(refs.undoRegionBtn, 'click', undoLastRegion);
   on(refs.redoRegionBtn, 'click', redoLastRegion);
+  on(refs.copyRegionBtn, 'click', copySelectedRegion);
+  on(refs.pasteRegionBtn, 'click', pasteCopiedRegion);
   on(refs.deleteRegionBtn, 'click', deleteSelectedRegion);
   on(refs.clearRegionsBtn, 'click', clearRegions);
   on(refs.copyLogBtn, 'click', onCopyLogs);
@@ -575,6 +590,8 @@ function bindEvents() {
   });
   on(refs.upscaleEngine, 'change', onEngineChange);
   on(refs.mosaicMode, 'change', updateMosaicFieldState);
+  on(refs.regionMode, 'change', onRegionDetailChange);
+  on(refs.regionStrength, 'change', onRegionDetailChange);
   on(refs.pixivEnabled, 'change', syncPixivFieldState);
   [refs.wmEnabled, refs.mosaicEnabled, refs.upscaleEnabled].forEach((control) => {
     control?.addEventListener('change', refreshExperienceUi);
@@ -1947,6 +1964,8 @@ function updateMosaicFieldState() {
   const mode = refs.mosaicMode.value;
   refs.mosaicPixelSize.disabled = mode !== 'pixelate';
   refs.mosaicBlurRadius.disabled = mode !== 'blur';
+  syncRegionDetailControls();
+  renderRegions();
 }
 
 function updateRecentImages(items) {
@@ -2011,11 +2030,15 @@ function renderImageQueue() {
     if (refs.applyRegionsForwardBtn) {
       refs.applyRegionsForwardBtn.disabled = true;
     }
+    if (refs.exportQueueZipBtn) {
+      refs.exportQueueZipBtn.disabled = true;
+    }
     return;
   }
 
+  const editedCount = state.imageQueue.filter((item) => (state.queueEdits[item.path]?.regions || []).length).length;
   if (refs.queueHint) {
-    refs.queueHint.textContent = `当前批次共 ${state.imageQueue.length} 张，点击任意一张就能切到那张继续处理。`;
+    refs.queueHint.textContent = `当前批次共 ${state.imageQueue.length} 张，已有 ${editedCount} 张带选区草稿；可以逐张微调，也可以一键导出 ZIP。`;
   }
   if (refs.clearQueueBtn) {
     refs.clearQueueBtn.disabled = false;
@@ -2029,13 +2052,22 @@ function renderImageQueue() {
   if (refs.applyRegionsForwardBtn) {
     refs.applyRegionsForwardBtn.disabled = !state.regions.length || state.imageQueueIndex < 0 || state.imageQueueIndex >= state.imageQueue.length - 1;
   }
+  if (refs.exportQueueZipBtn) {
+    refs.exportQueueZipBtn.disabled = state.imageQueue.length < 2;
+  }
 
   state.imageQueue.forEach((item, index) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'queue-item';
     button.classList.toggle('is-active', index === state.imageQueueIndex);
-    button.innerHTML = `<strong>${escapeHtml(item.fileName)}</strong><span>#${index + 1}${item.parent ? ` 路 ${escapeHtml(item.parent)}` : ''}</span>`;
+    const draft = index === state.imageQueueIndex
+      ? { regions: state.regions }
+      : state.queueEdits[item.path];
+    const regionCount = (draft?.regions || []).length;
+    const stateLabel = regionCount ? `已设 ${regionCount} 个选区` : '未设置选区';
+    button.classList.toggle('has-regions', regionCount > 0);
+    button.innerHTML = `<strong>${escapeHtml(item.fileName)}</strong><span>#${index + 1}${item.parent ? ` 路 ${escapeHtml(item.parent)}` : ''}</span><span class="queue-item-state">${stateLabel}</span>`;
     button.addEventListener('click', () => {
       void selectImageQueueItem(index);
     });
@@ -2614,6 +2646,37 @@ async function onExport() {
   updateStatusBadge(`\u72b6\u6001: ${result.message}`);
 }
 
+async function onExportQueueZip() {
+  if (state.imageQueue.length < 2) {
+    updateStatusBadge('状态: 批次里至少需要两张图片才能导出 ZIP');
+    return;
+  }
+
+  saveCurrentQueueEditState();
+  renderImageQueue();
+  updateStatusBadge('状态: 正在导出批次 ZIP');
+  const payload = buildSettings();
+  payload.queue = {
+    paths: state.imageQueue.map((item) => item.path),
+    edits: state.queueEdits,
+    activePath: state.imageQueue[state.imageQueueIndex]?.path || state.source?.path || '',
+  };
+
+  const result = await window.pywebview.api.export_queue_zip(payload);
+  if (!result.ok) {
+    if (!result.cancelled) {
+      pushLog(result.error || '批次 ZIP 导出失败');
+      updateStatusBadge('状态: 批次 ZIP 导出失败');
+    }
+    return;
+  }
+
+  state.ui.lastExportedPath = result.exportedPath || '';
+  (result.logs || []).forEach(pushLog);
+  updateStatusBadge(`状态: ${result.message}`);
+  refreshExperienceUi();
+}
+
 async function onResetPreview() {
   const result = await window.pywebview.api.reset_preview();
   if (!result.ok) {
@@ -3185,7 +3248,7 @@ function syncViewportControls() {
 function buildSettings() {
   return {
     order: refs.processOrder.value,
-    regions: state.regions,
+    regions: cloneRegions(),
     watermark: {
       enabled: refs.wmEnabled.checked,
       text: refs.wmText.value,
@@ -3238,6 +3301,15 @@ function onSourceMouseDown(event) {
 
   state.dragging = true;
   state.dragStart = clampToRect(event.clientX, event.clientY, metrics.rect);
+  if (currentRegionDefaults().shape === 'brush') {
+    state.brushDraft = {
+      points: [clientPointToImagePoint(state.dragStart, metrics)],
+      brush_size: clampInt(Number(refs.regionBrushSize?.value || 32), 6, 96),
+    };
+    refs.dragSelection.classList.add('hidden');
+    renderBrushDraft(metrics);
+    return;
+  }
   refs.dragSelection.classList.remove('hidden');
   setDragSelection(state.dragStart.x, state.dragStart.y, state.dragStart.x, state.dragStart.y, metrics);
 }
@@ -3350,7 +3422,13 @@ function onSourceMouseMove(event) {
   if (!metrics) {
     return;
   }
-  const current = clampToRect(event.clientX, event.clientY, metrics.rect);
+  const rawCurrent = clampToRect(event.clientX, event.clientY, metrics.rect);
+  if (state.brushDraft) {
+    addBrushDraftPoint(clientPointToImagePoint(rawCurrent, metrics));
+    renderBrushDraft(metrics);
+    return;
+  }
+  const current = adjustedRegionDragEnd(state.dragStart, rawCurrent, metrics, event);
   setDragSelection(state.dragStart.x, state.dragStart.y, current.x, current.y, metrics);
 }
 
@@ -3394,10 +3472,34 @@ function onSourceMouseUp(event) {
   refs.dragSelection.classList.add('hidden');
   state.dragging = false;
   if (!metrics) {
+    state.brushDraft = null;
+    removeBrushDraft();
     return;
   }
 
-  const end = clampToRect(event.clientX, event.clientY, metrics.rect);
+  if (state.brushDraft) {
+    const region = brushDraftToRegion();
+    removeBrushDraft();
+    state.brushDraft = null;
+    state.dragStart = null;
+    if (!region) {
+      return;
+    }
+    commitRegionMutation(() => {
+      state.regions.push(region);
+      state.selectedRegionIndex = state.regions.length - 1;
+    });
+    updateStatusBadge('状态: 画笔选区已更新');
+    pushLog(`添加选区: ${describeRegion(region)}`);
+    return;
+  }
+
+  const end = adjustedRegionDragEnd(
+    state.dragStart,
+    clampToRect(event.clientX, event.clientY, metrics.rect),
+    metrics,
+    event,
+  );
   const region = rectToImageRegion(state.dragStart, end, metrics);
   state.dragStart = null;
 
@@ -3410,7 +3512,7 @@ function onSourceMouseUp(event) {
     state.selectedRegionIndex = state.regions.length - 1;
   });
   updateStatusBadge('状态: 选区已更新');
-  pushLog(`添加选区: (${region.join(', ')})`);
+  pushLog(`添加选区: ${describeRegion(region)}`);
 }
 
 function onViewportWheel(kind, event) {
@@ -3431,14 +3533,218 @@ function onViewportWheel(kind, event) {
 }
 
 function setDragSelection(x1, y1, x2, y2, metrics) {
+  const shape = currentRegionDefaults().shape;
   const left = Math.min(x1, x2) - metrics.stageRect.left;
   const top = Math.min(y1, y2) - metrics.stageRect.top;
   const width = Math.abs(x2 - x1);
   const height = Math.abs(y2 - y1);
+  refs.dragSelection.classList.toggle('is-rounded', shape === 'rounded');
+  refs.dragSelection.classList.toggle('is-ellipse', shape === 'ellipse');
+  refs.dragSelection.classList.toggle('is-triangle', shape === 'triangle');
   refs.dragSelection.style.left = `${left}px`;
   refs.dragSelection.style.top = `${top}px`;
   refs.dragSelection.style.width = `${width}px`;
   refs.dragSelection.style.height = `${height}px`;
+}
+
+function clientPointToImagePoint(point, metrics) {
+  return {
+    x: clampInt(((point.x - metrics.rect.left) / metrics.rect.width) * state.source.width, 0, state.source.width),
+    y: clampInt(((point.y - metrics.rect.top) / metrics.rect.height) * state.source.height, 0, state.source.height),
+  };
+}
+
+function addBrushDraftPoint(point) {
+  if (!state.brushDraft) {
+    return;
+  }
+  const points = state.brushDraft.points;
+  const previous = points[points.length - 1];
+  if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) >= 2) {
+    points.push(point);
+  }
+}
+
+function brushDraftToRegion() {
+  const draft = state.brushDraft;
+  if (!draft || !Array.isArray(draft.points) || !draft.points.length) {
+    return null;
+  }
+  const points = draft.points.map((point) => ({
+    x: clampInt(point.x, 0, state.source.width),
+    y: clampInt(point.y, 0, state.source.height),
+  }));
+  if (points.length < 2) {
+    const first = points[0];
+    points.push({ x: first.x + 1, y: first.y + 1 });
+  }
+  return normalizeRegion({
+    shape: 'brush',
+    mode: 'inherit',
+    points,
+    brush_size: draft.brush_size,
+  });
+}
+
+function removeBrushDraft() {
+  refs.selectionLayer?.querySelector?.('.brush-draft-svg')?.remove();
+}
+
+function renderBrushDraft(metrics = imageMetrics()) {
+  removeBrushDraft();
+  if (!state.brushDraft || !metrics || !state.source) {
+    return;
+  }
+  const svg = createBrushSvg(state.brushDraft.points, state.brushDraft.brush_size, metrics, 'brush-draft-svg');
+  refs.selectionLayer.appendChild(svg);
+}
+
+function shouldLockRegionAspect(event) {
+  return !!(refs.regionLockAspect?.checked || event?.shiftKey);
+}
+
+function adjustedRegionDragEnd(start, end, metrics, event) {
+  if (!start || !shouldLockRegionAspect(event)) {
+    return end;
+  }
+
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const signX = dx >= 0 ? 1 : -1;
+  const signY = dy >= 0 ? 1 : -1;
+  const maxX = signX > 0 ? metrics.rect.right - start.x : start.x - metrics.rect.left;
+  const maxY = signY > 0 ? metrics.rect.bottom - start.y : start.y - metrics.rect.top;
+  const size = Math.min(Math.max(Math.abs(dx), Math.abs(dy)), maxX, maxY);
+  return {
+    x: start.x + (size * signX),
+    y: start.y + (size * signY),
+  };
+}
+
+function normalizeRegion(region, bounds = {}) {
+  const maxWidth = Number(bounds.width || state.source?.width || 0);
+  const maxHeight = Number(bounds.height || state.source?.height || 0);
+  if (Array.isArray(region)) {
+    const [x1, y1, x2, y2] = region.map((value) => Number(value || 0));
+    return {
+      x1: clampInt(Math.min(x1, x2), 0, maxWidth || Math.max(x1, x2)),
+      y1: clampInt(Math.min(y1, y2), 0, maxHeight || Math.max(y1, y2)),
+      x2: clampInt(Math.max(x1, x2), 0, maxWidth || Math.max(x1, x2)),
+      y2: clampInt(Math.max(y1, y2), 0, maxHeight || Math.max(y1, y2)),
+      shape: 'rect',
+      mode: 'inherit',
+    };
+  }
+
+  const raw = region || {};
+  const shape = ['rect', 'rounded', 'ellipse', 'triangle', 'brush'].includes(raw.shape) ? raw.shape : 'rect';
+  const rawPoints = Array.isArray(raw.points)
+    ? raw.points.map((point) => ({
+      x: clampInt(Number(point.x ?? point[0] ?? 0), 0, maxWidth || Number(point.x ?? point[0] ?? 0)),
+      y: clampInt(Number(point.y ?? point[1] ?? 0), 0, maxHeight || Number(point.y ?? point[1] ?? 0)),
+    }))
+    : [];
+  const brushSize = clampInt(Number(raw.brush_size || refs.regionBrushSize?.value || 32), 6, 96);
+  const pointXs = rawPoints.map((point) => point.x);
+  const pointYs = rawPoints.map((point) => point.y);
+  const x1 = shape === 'brush' && rawPoints.length ? Math.min(...pointXs) - brushSize : Number(raw.x1 || 0);
+  const y1 = shape === 'brush' && rawPoints.length ? Math.min(...pointYs) - brushSize : Number(raw.y1 || 0);
+  const x2 = shape === 'brush' && rawPoints.length ? Math.max(...pointXs) + brushSize : Number(raw.x2 || 0);
+  const y2 = shape === 'brush' && rawPoints.length ? Math.max(...pointYs) + brushSize : Number(raw.y2 || 0);
+  const mode = ['inherit', 'pixelate', 'blur'].includes(raw.mode) ? raw.mode : 'inherit';
+  const next = {
+    x1: clampInt(Math.min(x1, x2), 0, maxWidth || Math.max(x1, x2)),
+    y1: clampInt(Math.min(y1, y2), 0, maxHeight || Math.max(y1, y2)),
+    x2: clampInt(Math.max(x1, x2), 0, maxWidth || Math.max(x1, x2)),
+    y2: clampInt(Math.max(y1, y2), 0, maxHeight || Math.max(y1, y2)),
+    shape,
+    mode,
+  };
+  if (shape === 'brush') {
+    next.points = rawPoints;
+    next.brush_size = brushSize;
+  }
+  if (Number.isFinite(Number(raw.pixel_size))) {
+    next.pixel_size = clampInt(Number(raw.pixel_size), 2, 50);
+  }
+  if (Number.isFinite(Number(raw.blur_radius))) {
+    next.blur_radius = clampInt(Number(raw.blur_radius), 1, 50);
+  }
+  return next;
+}
+
+function regionBounds(region) {
+  const safe = normalizeRegion(region);
+  return [safe.x1, safe.y1, safe.x2, safe.y2];
+}
+
+function describeRegion(region) {
+  const safe = normalizeRegion(region);
+  const shapeLabel = ({ rect: '矩形', rounded: '圆角', ellipse: '椭圆', triangle: '三角形', brush: `画笔 ${safe.brush_size || 32}px` })[safe.shape] || '矩形';
+  const modeLabel = safe.mode === 'inherit'
+    ? '跟随全局'
+    : (safe.mode === 'blur' ? `模糊 ${safe.blur_radius || refs.mosaicBlurRadius?.value || 15}` : `马赛克 ${safe.pixel_size || refs.mosaicPixelSize?.value || 10}`);
+  return `${shapeLabel} · ${modeLabel} · ${safe.x1}, ${safe.y1}, ${safe.x2}, ${safe.y2}`;
+}
+
+function currentRegionDefaults() {
+  return {
+    shape: refs.regionShape?.value || 'rect',
+    mode: 'inherit',
+    brush_size: clampInt(Number(refs.regionBrushSize?.value || 32), 6, 96),
+  };
+}
+
+function syncRegionDetailControls() {
+  const region = state.regions[state.selectedRegionIndex];
+  const hasSelection = !!region;
+  const safe = hasSelection ? normalizeRegion(region) : null;
+  if (refs.regionMode) {
+    refs.regionMode.disabled = !hasSelection;
+    refs.regionMode.value = safe?.mode || 'inherit';
+  }
+  if (refs.regionStrength) {
+    const activeMode = safe?.mode === 'blur' ? 'blur' : 'pixelate';
+    refs.regionStrength.disabled = !hasSelection || safe?.mode === 'inherit';
+    refs.regionStrength.min = activeMode === 'blur' ? '1' : '2';
+    refs.regionStrength.max = '50';
+    refs.regionStrength.value = activeMode === 'blur'
+      ? String(safe?.blur_radius || refs.mosaicBlurRadius?.value || 15)
+      : String(safe?.pixel_size || refs.mosaicPixelSize?.value || 10);
+  }
+  if (refs.regionStrengthLabel) {
+    refs.regionStrengthLabel.textContent = safe?.mode === 'blur' ? '选中区域模糊半径' : '选中区域马赛克块';
+  }
+  if (refs.regionStrengthHint) {
+    refs.regionStrengthHint.textContent = hasSelection
+      ? (safe.mode === 'inherit' ? '当前区域跟随全局模式和强度。切换效果后可单独覆盖。' : '这个强度只影响当前选中的区域。')
+      : '选中区域后，可单独覆盖马赛克块大小或模糊半径。';
+  }
+}
+
+function onRegionDetailChange() {
+  const index = state.selectedRegionIndex;
+  if (index < 0 || index >= state.regions.length) {
+    syncRegionDetailControls();
+    return;
+  }
+
+  commitRegionMutation(() => {
+    const region = normalizeRegion(state.regions[index]);
+    region.mode = refs.regionMode?.value || 'inherit';
+    if (region.mode === 'pixelate') {
+      region.pixel_size = clampInt(Number(refs.regionStrength?.value || refs.mosaicPixelSize?.value || 10), 2, 50);
+      delete region.blur_radius;
+    } else if (region.mode === 'blur') {
+      region.blur_radius = clampInt(Number(refs.regionStrength?.value || refs.mosaicBlurRadius?.value || 15), 1, 50);
+      delete region.pixel_size;
+    } else {
+      delete region.pixel_size;
+      delete region.blur_radius;
+    }
+    state.regions[index] = region;
+  });
+  updateStatusBadge(`状态: 已更新选区 #${index + 1} 的效果`);
 }
 
 function renderRegionChips() {
@@ -3450,7 +3756,7 @@ function renderRegionChips() {
       const chip = document.createElement('div');
       chip.className = 'region-chip';
       chip.classList.toggle('is-active', index === state.selectedRegionIndex);
-      chip.innerHTML = `<span>#${index + 1} ${region.join(', ')}</span>`;
+      chip.innerHTML = `<span>#${index + 1} ${escapeHtml(describeRegion(region))}</span>`;
       chip.addEventListener('click', () => {
         state.selectedRegionIndex = index;
         renderRegionChips();
@@ -3466,7 +3772,7 @@ function renderRegionChips() {
           state.regions.splice(index, 1);
         });
         updateStatusBadge(`状态: 已删除选区 #${index + 1}`);
-        pushLog(`删除选区: (${region.join(', ')})`);
+        pushLog(`删除选区: ${describeRegion(region)}`);
       });
       chip.appendChild(button);
       refs.regionList.appendChild(chip);
@@ -3482,7 +3788,37 @@ function renderRegionChips() {
   if (refs.deleteRegionBtn) {
     refs.deleteRegionBtn.disabled = state.selectedRegionIndex < 0 || !state.regions.length;
   }
+  if (refs.copyRegionBtn) {
+    refs.copyRegionBtn.disabled = state.selectedRegionIndex < 0 || !state.regions.length;
+  }
+  if (refs.pasteRegionBtn) {
+    refs.pasteRegionBtn.disabled = !state.regionClipboard || !state.source;
+  }
+  syncRegionDetailControls();
   refreshExperienceUi();
+}
+
+function createBrushSvg(points, brushSize, metrics, className) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.classList.add('brush-region-svg', className);
+  svg.setAttribute('viewBox', `0 0 ${metrics.rect.width} ${metrics.rect.height}`);
+  svg.style.left = '0';
+  svg.style.top = '0';
+  svg.style.width = `${metrics.rect.width}px`;
+  svg.style.height = `${metrics.rect.height}px`;
+  const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  const scaled = (points || []).map((point) => {
+    const x = (Number(point.x ?? point[0] ?? 0) / state.source.width) * metrics.rect.width;
+    const y = (Number(point.y ?? point[1] ?? 0) / state.source.height) * metrics.rect.height;
+    return `${x},${y}`;
+  });
+  polyline.setAttribute('points', scaled.join(' '));
+  polyline.setAttribute('fill', 'none');
+  polyline.setAttribute('stroke-linecap', 'round');
+  polyline.setAttribute('stroke-linejoin', 'round');
+  polyline.setAttribute('stroke-width', String(Math.max(4, (brushSize / state.source.width) * metrics.rect.width)));
+  svg.appendChild(polyline);
+  return svg;
 }
 
 function renderRegions() {
@@ -3497,16 +3833,38 @@ function renderRegions() {
   }
 
   state.regions.forEach((region, index) => {
-    const [x1, y1, x2, y2] = region;
+    const safe = normalizeRegion(region);
+    const [x1, y1, x2, y2] = regionBounds(safe);
     const box = document.createElement('div');
     box.className = 'selection-box';
+    box.classList.toggle('is-ellipse', safe.shape === 'ellipse');
+    box.classList.toggle('is-rounded', safe.shape === 'rounded');
+    box.classList.toggle('is-triangle', safe.shape === 'triangle');
+    box.classList.toggle('is-brush', safe.shape === 'brush');
     const isActive = index === state.selectedRegionIndex;
     box.classList.toggle('is-active', isActive);
     box.dataset.index = String(index + 1);
+    box.dataset.effect = safe.mode === 'inherit' ? (refs.mosaicMode?.value || 'pixelate') : safe.mode;
     box.style.left = `${(x1 / state.source.width) * metrics.rect.width}px`;
     box.style.top = `${(y1 / state.source.height) * metrics.rect.height}px`;
     box.style.width = `${((x2 - x1) / state.source.width) * metrics.rect.width}px`;
     box.style.height = `${((y2 - y1) / state.source.height) * metrics.rect.height}px`;
+    if (safe.shape === 'brush') {
+      const brushSvg = createBrushSvg(safe.points, safe.brush_size, metrics, 'brush-region-committed');
+      brushSvg.dataset.index = String(index + 1);
+      brushSvg.dataset.effect = safe.mode === 'inherit' ? (refs.mosaicMode?.value || 'pixelate') : safe.mode;
+      brushSvg.classList.toggle('is-active', isActive);
+      brushSvg.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        state.selectedRegionIndex = index;
+        startRegionTransform(index, 'move', '', event);
+        renderRegionChips();
+        renderRegions();
+        updateStatusBadge(`状态: 已选中选区 #${index + 1}`);
+      });
+      refs.selectionLayer.appendChild(brushSvg);
+    }
     box.addEventListener('mousedown', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -3560,16 +3918,19 @@ function rectToImageRegion(start, end, metrics) {
     return null;
   }
 
-  return [
-    clampInt(((left - metrics.rect.left) / metrics.rect.width) * state.source.width, 0, state.source.width),
-    clampInt(((top - metrics.rect.top) / metrics.rect.height) * state.source.height, 0, state.source.height),
-    clampInt(((right - metrics.rect.left) / metrics.rect.width) * state.source.width, 0, state.source.width),
-    clampInt(((bottom - metrics.rect.top) / metrics.rect.height) * state.source.height, 0, state.source.height),
-  ];
+  const defaults = currentRegionDefaults();
+  return normalizeRegion({
+    x1: clampInt(((left - metrics.rect.left) / metrics.rect.width) * state.source.width, 0, state.source.width),
+    y1: clampInt(((top - metrics.rect.top) / metrics.rect.height) * state.source.height, 0, state.source.height),
+    x2: clampInt(((right - metrics.rect.left) / metrics.rect.width) * state.source.width, 0, state.source.width),
+    y2: clampInt(((bottom - metrics.rect.top) / metrics.rect.height) * state.source.height, 0, state.source.height),
+    shape: defaults.shape,
+    mode: defaults.mode,
+  });
 }
 
 function startRegionTransform(index, mode, handle, event) {
-  const region = state.regions[index];
+  const region = normalizeRegion(state.regions[index]);
   if (!region) {
     return;
   }
@@ -3582,7 +3943,7 @@ function startRegionTransform(index, mode, handle, event) {
     handle,
     startX: event.clientX,
     startY: event.clientY,
-    initialRegion: [...region],
+    initialRegion: cloneRegions([region])[0],
   };
 }
 
@@ -3597,16 +3958,17 @@ function applyRegionTransform(event) {
   }
   const deltaX = ((event.clientX - transform.startX) / metrics.rect.width) * state.source.width;
   const deltaY = ((event.clientY - transform.startY) / metrics.rect.height) * state.source.height;
-  const [x1, y1, x2, y2] = transform.initialRegion;
+  const baseRegion = normalizeRegion(transform.initialRegion);
+  const [x1, y1, x2, y2] = regionBounds(baseRegion);
   const minSize = 8;
-  let next = [...transform.initialRegion];
+  let nextBounds = [x1, y1, x2, y2];
 
   if (transform.mode === 'move') {
     const width = x2 - x1;
     const height = y2 - y1;
     const left = clampInt(x1 + deltaX, 0, Math.max(0, state.source.width - width));
     const top = clampInt(y1 + deltaY, 0, Math.max(0, state.source.height - height));
-    next = [left, top, left + width, top + height];
+    nextBounds = [left, top, left + width, top + height];
   } else if (transform.mode === 'resize') {
     let left = x1;
     let top = y1;
@@ -3624,13 +3986,36 @@ function applyRegionTransform(event) {
     if (transform.handle.includes('e')) {
       right = clampInt(x2 + deltaX, left + minSize, state.source.width);
     }
-    next = [left, top, right, bottom];
+    nextBounds = [left, top, right, bottom];
   }
 
-  state.regions[transform.index] = next;
+  const nextRegion = {
+    ...baseRegion,
+    x1: nextBounds[0],
+    y1: nextBounds[1],
+    x2: nextBounds[2],
+    y2: nextBounds[3],
+  };
+  if (baseRegion.shape === 'brush' && Array.isArray(baseRegion.points)) {
+    nextRegion.points = transformBrushPoints(baseRegion.points, [x1, y1, x2, y2], nextBounds);
+  }
+  state.regions[transform.index] = normalizeRegion(nextRegion);
   renderRegionChips();
   renderRegions();
   return true;
+}
+
+function transformBrushPoints(points, fromBounds, toBounds) {
+  const [fromX1, fromY1, fromX2, fromY2] = fromBounds;
+  const [toX1, toY1, toX2, toY2] = toBounds;
+  const fromWidth = Math.max(1, fromX2 - fromX1);
+  const fromHeight = Math.max(1, fromY2 - fromY1);
+  const toWidth = Math.max(1, toX2 - toX1);
+  const toHeight = Math.max(1, toY2 - toY1);
+  return points.map((point) => ({
+    x: clampInt(toX1 + (((point.x - fromX1) / fromWidth) * toWidth), 0, state.source.width),
+    y: clampInt(toY1 + (((point.y - fromY1) / fromHeight) * toHeight), 0, state.source.height),
+  }));
 }
 
 function finishRegionTransform() {
@@ -3685,6 +4070,40 @@ function redoLastRegion() {
   pushLog('重做了一次选区编辑');
 }
 
+function copySelectedRegion() {
+  if (state.selectedRegionIndex < 0 || state.selectedRegionIndex >= state.regions.length) {
+    updateStatusBadge('状态: 还没有选中要复制的选区');
+    return;
+  }
+  state.regionClipboard = cloneRegions([state.regions[state.selectedRegionIndex]])[0];
+  renderRegionChips();
+  updateStatusBadge(`状态: 已复制选区 #${state.selectedRegionIndex + 1}`);
+}
+
+function pasteCopiedRegion() {
+  if (!state.regionClipboard || !state.source) {
+    updateStatusBadge('状态: 剪贴板里还没有选区');
+    return;
+  }
+  const copied = normalizeRegion(state.regionClipboard);
+  const width = copied.x2 - copied.x1;
+  const height = copied.y2 - copied.y1;
+  const offset = Math.max(12, Math.round(Math.min(width, height) * 0.08));
+  const left = clampInt(copied.x1 + offset, 0, Math.max(0, state.source.width - width));
+  const top = clampInt(copied.y1 + offset, 0, Math.max(0, state.source.height - height));
+  commitRegionMutation(() => {
+    state.regions.push(normalizeRegion({
+      ...copied,
+      x1: left,
+      y1: top,
+      x2: left + width,
+      y2: top + height,
+    }));
+    state.selectedRegionIndex = state.regions.length - 1;
+  });
+  updateStatusBadge('状态: 已粘贴选区');
+}
+
 function deleteSelectedRegion() {
   if (state.selectedRegionIndex < 0 || state.selectedRegionIndex >= state.regions.length) {
     updateStatusBadge('状态: 还没有选中要删除的选区');
@@ -3697,7 +4116,7 @@ function deleteSelectedRegion() {
     state.selectedRegionIndex = Math.min(index, state.regions.length - 1);
   });
   updateStatusBadge(`状态: 已删除选区 #${index + 1}`);
-  pushLog(`删除选区: (${removed.join(', ')})`);
+  pushLog(`删除选区: ${describeRegion(removed)}`);
 }
 
 function clearRegions() {
@@ -3743,6 +4162,18 @@ function onWorkspaceKeyDown(event) {
     event.preventDefault();
     state.ui.spacePressed = true;
     syncViewportControls();
+    return;
+  }
+
+  if (modifier && key === 'c') {
+    event.preventDefault();
+    copySelectedRegion();
+    return;
+  }
+
+  if (modifier && key === 'v') {
+    event.preventDefault();
+    pasteCopiedRegion();
     return;
   }
 
@@ -3868,6 +4299,8 @@ function fileToDataUrl(file) {
 function cancelActiveDrag() {
   state.dragging = false;
   state.dragStart = null;
+  state.brushDraft = null;
+  removeBrushDraft();
   refs.dragSelection.classList.add('hidden');
   if (state.ui.viewportPan.active) {
     const viewport = state.ui.viewportPan.kind === 'source' ? refs.sourceViewport : refs.resultViewport;
@@ -3917,19 +4350,32 @@ function updateRegionBadge() {
 }
 
 function cloneRegions(regions = state.regions) {
-  return (regions || []).map((region) => Array.isArray(region) ? [...region] : region);
+  return (regions || []).map((region) => normalizeRegion(region));
 }
 
 function scaleRegionsForImage(regions, fromWidth, fromHeight, toWidth, toHeight) {
   if (!Array.isArray(regions) || !regions.length || !fromWidth || !fromHeight || !toWidth || !toHeight) {
     return [];
   }
-  return regions.map((region) => ([
-    clampInt((region[0] / fromWidth) * toWidth, 0, toWidth),
-    clampInt((region[1] / fromHeight) * toHeight, 0, toHeight),
-    clampInt((region[2] / fromWidth) * toWidth, 0, toWidth),
-    clampInt((region[3] / fromHeight) * toHeight, 0, toHeight),
-  ]));
+  return regions.map((region) => {
+    const safe = Array.isArray(region)
+      ? { x1: Number(region[0] || 0), y1: Number(region[1] || 0), x2: Number(region[2] || 0), y2: Number(region[3] || 0), shape: 'rect', mode: 'inherit' }
+      : { ...region };
+    if (safe.shape === 'brush' && Array.isArray(safe.points)) {
+      safe.points = safe.points.map((point) => ({
+        x: clampInt((Number(point.x ?? point[0] ?? 0) / fromWidth) * toWidth, 0, toWidth),
+        y: clampInt((Number(point.y ?? point[1] ?? 0) / fromHeight) * toHeight, 0, toHeight),
+      }));
+      safe.brush_size = clampInt(Number(safe.brush_size || 32) * Math.min(toWidth / fromWidth, toHeight / fromHeight), 6, 96);
+    }
+    return normalizeRegion({
+      ...safe,
+      x1: clampInt((safe.x1 / fromWidth) * toWidth, 0, toWidth),
+      y1: clampInt((safe.y1 / fromHeight) * toHeight, 0, toHeight),
+      x2: clampInt((safe.x2 / fromWidth) * toWidth, 0, toWidth),
+      y2: clampInt((safe.y2 / fromHeight) * toHeight, 0, toHeight),
+    }, { width: toWidth, height: toHeight });
+  });
 }
 
 function getCurrentQueuePath() {

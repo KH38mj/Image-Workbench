@@ -616,6 +616,12 @@ body.logs-hidden .workspace {
   background: transparent;
 }
 
+.region-detail-grid {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(91, 111, 127, 0.18);
+}
+
 .field input[type="color"] {
   min-height: 52px;
   border-radius: 20px;
@@ -969,6 +975,10 @@ kbd {
   box-shadow: 0 12px 24px rgba(15, 118, 110, 0.12);
 }
 
+.queue-item.has-regions {
+  border-color: rgba(15, 118, 110, 0.26);
+}
+
 .queue-item strong,
 .queue-item span {
   display: block;
@@ -985,12 +995,30 @@ kbd {
   line-height: 1.45;
 }
 
+.queue-item-state {
+  display: inline-flex !important;
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent-strong) !important;
+  font-weight: 800;
+  font-size: 0.78rem !important;
+}
+
 .queue-item.empty {
   cursor: default;
 }
 
 .guide-card {
   background: linear-gradient(180deg, rgba(241, 247, 244, 0.95), rgba(255, 255, 255, 0.94));
+}
+
+.privacy-copy {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(15, 118, 110, 0.07);
+  border: 1px solid rgba(15, 118, 110, 0.12);
 }
 
 .guide-steps {
@@ -1091,11 +1119,18 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  max-width: 100%;
   padding: 8px 10px 8px 12px;
   border-radius: var(--radius-md);
   background: #fff;
   border: 1px solid rgba(15, 118, 110, 0.12);
   font-size: 0.9rem;
+}
+
+.region-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .region-chip.is-active {
@@ -1295,11 +1330,96 @@ kbd {
   cursor: move;
 }
 
+.selection-box.is-rounded {
+  border-radius: 20%;
+}
+
+.selection-box.is-ellipse {
+  border-radius: 999px;
+}
+
+.selection-box.is-triangle {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.selection-box.is-triangle::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  background: rgba(15, 118, 110, 0.18);
+  border: 2px dashed #2dd4bf;
+}
+
+.selection-box.is-triangle[data-effect='blur']::before {
+  border-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.16);
+}
+
+.drag-selection.is-triangle {
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.selection-box[data-effect='blur'] {
+  border-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.16);
+}
+
 .selection-box.is-active {
   border-style: solid;
   border-color: #f8fafc;
   background: rgba(20, 184, 166, 0.28);
   box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+}
+
+.selection-box.is-triangle.is-active {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.selection-box.is-triangle.is-active::before {
+  border-style: solid;
+  border-color: #f8fafc;
+  background: rgba(20, 184, 166, 0.28);
+  filter: drop-shadow(0 0 0 rgba(15, 118, 110, 0.42));
+}
+
+.selection-box.is-brush {
+  border-style: dotted;
+  border-color: rgba(248, 250, 252, 0.75);
+  background: rgba(15, 118, 110, 0.05);
+}
+
+.brush-region-svg {
+  position: absolute;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.brush-region-svg polyline {
+  stroke: rgba(45, 212, 191, 0.42);
+  filter: drop-shadow(0 6px 12px rgba(15, 118, 110, 0.22));
+}
+
+.brush-region-committed {
+  pointer-events: auto;
+  cursor: move;
+}
+
+.brush-region-committed polyline {
+  pointer-events: stroke;
+}
+
+.brush-region-committed[data-effect='blur'] polyline {
+  stroke: rgba(251, 191, 36, 0.5);
+}
+
+.brush-region-committed.is-active polyline,
+.brush-draft-svg polyline {
+  stroke: rgba(248, 250, 252, 0.76);
 }
 
 .selection-handle {
@@ -1337,7 +1457,7 @@ kbd {
 }
 
 .selection-box::after {
-  content: attr(data-index);
+  content: attr(data-index) ' · ' attr(data-effect);
   position: absolute;
   top: 10px;
   left: 10px;
@@ -1360,6 +1480,14 @@ kbd {
   border-radius: var(--radius-md);
   background: rgba(20, 184, 166, 0.2);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+}
+
+.drag-selection.is-rounded {
+  border-radius: 20%;
+}
+
+.drag-selection.is-ellipse {
+  border-radius: 999px;
 }
 
 .hidden {

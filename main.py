@@ -425,9 +425,95 @@ class MosaicProcessor:
     """椹禌鍏?妯＄硦澶勭悊鍣?"""
 
     @staticmethod
-    def pixelate(img: Image.Image, region: Tuple[int, int, int, int], pixel_size: int = 10) -> Image.Image:
+    def _normalize_region(region, default_mode: str, kwargs: dict) -> dict:
+        if isinstance(region, dict):
+            mode = str(region.get("mode") or default_mode or "pixelate").lower()
+            shape = str(region.get("shape") or "rect").lower()
+            pixel_size = int(region.get("pixel_size") or kwargs.get("pixel_size", 10))
+            blur_radius = int(region.get("blur_radius") or kwargs.get("radius", 15))
+            brush_size = int(region.get("brush_size") or 32)
+            points = []
+            if shape == "brush" and isinstance(region.get("points"), list):
+                for point in region.get("points", []):
+                    if isinstance(point, dict):
+                        points.append((int(point.get("x", 0)), int(point.get("y", 0))))
+                    else:
+                        px, py = point
+                        points.append((int(px), int(py)))
+            if points:
+                xs = [point[0] for point in points]
+                ys = [point[1] for point in points]
+                x1 = min(xs) - brush_size
+                y1 = min(ys) - brush_size
+                x2 = max(xs) + brush_size
+                y2 = max(ys) + brush_size
+            else:
+                x1 = int(region.get("x1", 0))
+                y1 = int(region.get("y1", 0))
+                x2 = int(region.get("x2", 0))
+                y2 = int(region.get("y2", 0))
+        else:
+            x1, y1, x2, y2 = (int(v) for v in region)
+            mode = default_mode
+            shape = "rect"
+            pixel_size = int(kwargs.get("pixel_size", 10))
+            blur_radius = int(kwargs.get("radius", 15))
+            brush_size = 32
+            points = []
+
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        if shape not in {"rect", "rounded", "ellipse", "triangle", "brush"}:
+            shape = "rect"
+        if mode not in {"pixelate", "blur"}:
+            mode = default_mode if default_mode in {"pixelate", "blur"} else "pixelate"
+        return {
+            "box": (left, top, right, bottom),
+            "mode": mode,
+            "shape": shape,
+            "pixel_size": max(2, pixel_size),
+            "blur_radius": max(1, blur_radius),
+            "brush_size": max(1, brush_size),
+            "points": points,
+        }
+
+    @staticmethod
+    def _paste_region(img: Image.Image, region_img: Image.Image, box: Tuple[int, int, int, int], shape: str,
+                      points=None, brush_size: int = 32) -> None:
+        x1, y1, x2, y2 = box
+        if shape == "rect":
+            img.paste(region_img, (x1, y1))
+            return
+
+        width = max(1, x2 - x1)
+        height = max(1, y2 - y1)
+        mask = Image.new("L", (width, height), 0)
+        draw = ImageDraw.Draw(mask)
+        if shape == "ellipse":
+            draw.ellipse((0, 0, width - 1, height - 1), fill=255)
+        elif shape == "triangle":
+            draw.polygon(((width // 2, 0), (width - 1, height - 1), (0, height - 1)), fill=255)
+        elif shape == "brush":
+            relative_points = [(int(px - x1), int(py - y1)) for px, py in (points or [])]
+            if len(relative_points) >= 2:
+                draw.line(relative_points, fill=255, width=max(1, int(brush_size)), joint="curve")
+            for px, py in relative_points:
+                radius = max(1, int(brush_size) // 2)
+                draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=255)
+        else:
+            radius = max(4, int(min(width, height) * 0.18))
+            draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=radius, fill=255)
+        img.paste(region_img, (x1, y1), mask)
+
+    @staticmethod
+    def pixelate(img: Image.Image, region: Tuple[int, int, int, int], pixel_size: int = 10, shape: str = "rect",
+                 points=None, brush_size: int = 32) -> Image.Image:
         """鍍忕礌椹禌鍏?"""
         x1, y1, x2, y2 = region
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(img.width, x2), min(img.height, y2)
+        if x2 <= x1 or y2 <= y1:
+            return img
         region_img = img.crop((x1, y1, x2, y2))
 
         # 缂╁皬鍐嶆斁澶?
@@ -437,20 +523,25 @@ class MosaicProcessor:
         )
         pixelated = small.resize((x2 - x1, y2 - y1), Image.NEAREST)
 
-        img.paste(pixelated, (x1, y1))
+        MosaicProcessor._paste_region(img, pixelated, (x1, y1, x2, y2), shape, points=points, brush_size=brush_size)
         return img
 
     @staticmethod
-    def gaussian_blur(img: Image.Image, region: Tuple[int, int, int, int], radius: int = 15) -> Image.Image:
+    def gaussian_blur(img: Image.Image, region: Tuple[int, int, int, int], radius: int = 15, shape: str = "rect",
+                      points=None, brush_size: int = 32) -> Image.Image:
         """楂樻柉妯＄硦"""
         x1, y1, x2, y2 = region
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(img.width, x2), min(img.height, y2)
+        if x2 <= x1 or y2 <= y1:
+            return img
         region_img = img.crop((x1, y1, x2, y2))
         blurred = region_img.filter(ImageFilter.GaussianBlur(radius=radius))
-        img.paste(blurred, (x1, y1))
+        MosaicProcessor._paste_region(img, blurred, (x1, y1, x2, y2), shape, points=points, brush_size=brush_size)
         return img
 
     def process(self, input_path: Path, output_path: Path,
-                regions: List[Tuple[int, int, int, int]],
+                regions: List,
                 mode: str = "pixelate", **kwargs):
         """澶勭悊鍗曞紶鍥剧墖
 
@@ -463,13 +554,20 @@ class MosaicProcessor:
         if img.mode != 'RGB':
             img = img.convert('RGB')
 
-        for region in regions:
-            if mode == "pixelate":
-                pixel_size = kwargs.get('pixel_size', 10)
-                img = self.pixelate(img, region, pixel_size)
-            elif mode == "blur":
-                radius = kwargs.get('radius', 15)
-                img = self.gaussian_blur(img, region, radius)
+        for raw_region in regions:
+            region = self._normalize_region(raw_region, mode, kwargs)
+            if region["box"][2] <= region["box"][0] or region["box"][3] <= region["box"][1]:
+                continue
+            if region["mode"] == "pixelate":
+                img = self.pixelate(
+                    img, region["box"], region["pixel_size"], shape=region["shape"],
+                    points=region["points"], brush_size=region["brush_size"],
+                )
+            elif region["mode"] == "blur":
+                img = self.gaussian_blur(
+                    img, region["box"], region["blur_radius"], shape=region["shape"],
+                    points=region["points"], brush_size=region["brush_size"],
+                )
 
         # 淇濆瓨锛堝幓闄?metadata锛?
         img.save(output_path, 'JPEG', quality=95, optimize=True)

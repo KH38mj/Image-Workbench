@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import traceback
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1268,6 +1269,85 @@ class WebviewBridge:
         except Exception as exc:
             return self._error_response(exc)
 
+    def export_queue_zip(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            if self._window is None:
+                raise RuntimeError("窗口尚未初始化")
+
+            payload = payload or {}
+            queue = payload.get("queue") or {}
+            paths = [Path(str(item)) for item in queue.get("paths", []) if str(item or "").strip()]
+            if len(paths) < 2:
+                raise RuntimeError("批次里至少需要两张图片才能导出 ZIP")
+            missing = [str(path) for path in paths if not path.exists()]
+            if missing:
+                raise RuntimeError(f"批次里有图片不存在：{missing[0]}")
+
+            with self._lock:
+                normalized = self._normalize_settings(payload)
+                self._config.update(normalized)
+                self._save_config()
+
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dialog_result = self._window.create_file_dialog(
+                webview.FileDialog.SAVE,
+                save_filename=f"image_workbench_batch_{stamp}.zip",
+                file_types=("ZIP (*.zip)",),
+            )
+            output_path = self._first_path(dialog_result)
+            if not output_path:
+                return {"ok": False, "cancelled": True}
+
+            destination = Path(output_path)
+            if destination.suffix.lower() != ".zip":
+                destination = destination.with_suffix(".zip")
+
+            queue_edits = queue.get("edits") if isinstance(queue.get("edits"), dict) else {}
+            logs: List[str] = [f"开始导出批次 ZIP：{len(paths)} 张"]
+            with tempfile.TemporaryDirectory(prefix="pywebview_queue_zip_") as tmp_dir:
+                tmp_root = Path(tmp_dir)
+                outputs_dir = tmp_root / "outputs"
+                outputs_dir.mkdir(parents=True, exist_ok=True)
+
+                processed: List[Tuple[Path, str]] = []
+                used_names: Dict[str, int] = {}
+                for index, image_path in enumerate(paths, start=1):
+                    item_settings = dict(normalized)
+                    item_settings["watermark"] = dict(normalized["watermark"])
+                    item_settings["mosaic"] = dict(normalized["mosaic"])
+                    item_settings["upscale"] = dict(normalized["upscale"])
+                    edit = queue_edits.get(str(image_path)) or {}
+                    if isinstance(edit, dict) and isinstance(edit.get("regions"), list):
+                        item_settings["regions"] = [self._normalize_region_spec(region) for region in edit.get("regions", [])]
+                    else:
+                        item_settings["regions"] = []
+
+                    ext = self._preferred_extension(item_settings)
+                    base_name = f"{index:03d}_{image_path.stem}_processed{ext}"
+                    used_names[base_name] = used_names.get(base_name, 0) + 1
+                    if used_names[base_name] > 1:
+                        base_name = f"{index:03d}_{image_path.stem}_processed_{used_names[base_name]}{ext}"
+                    output_file = outputs_dir / base_name
+                    result_path, item_logs = self._run_pipeline(image_path, output_file, item_settings)
+                    processed.append((result_path, base_name))
+                    logs.append(f"[{index}/{len(paths)}] {image_path.name} -> {base_name}")
+                    logs.extend(f"[{image_path.name}] {line}" for line in item_logs[1:])
+
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for result_path, archive_name in processed:
+                        archive.write(result_path, archive_name)
+
+            logs.append(f"批次 ZIP 已导出到：{destination}")
+            return {
+                "ok": True,
+                "exportedPath": str(destination),
+                "logs": logs,
+                "message": f"已导出批次 ZIP：{destination.name}",
+            }
+        except Exception as exc:
+            return self._error_response(exc)
+
     def start_batch(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             with self._lock:
@@ -2148,7 +2228,7 @@ class WebviewBridge:
 
         return {
             "order": settings.get("order") or self._config["order"],
-            "regions": [tuple(int(v) for v in region) for region in settings.get("regions", [])],
+            "regions": [self._normalize_region_spec(region) for region in settings.get("regions", [])],
             "watermark": {
                 "enabled": bool(watermark.get("enabled", self._config["watermark"].get("enabled", True))),
                 "text": str(watermark.get("text", self._config["watermark"]["text"]) or "YourName"),
@@ -2877,6 +2957,67 @@ class WebviewBridge:
             "blocked": blocked,
         }
 
+    def _normalize_region_spec(self, region: Any) -> Dict[str, Any]:
+        if isinstance(region, dict):
+            shape = str(region.get("shape") or "rect").lower()
+            mode = str(region.get("mode") or "inherit").lower()
+            pixel_size_raw = region.get("pixel_size")
+            blur_radius_raw = region.get("blur_radius")
+            brush_size_raw = region.get("brush_size")
+            points: List[Dict[str, int]] = []
+            if shape == "brush" and isinstance(region.get("points"), list):
+                for point in region.get("points", []):
+                    if isinstance(point, dict):
+                        points.append({"x": int(point.get("x", 0)), "y": int(point.get("y", 0))})
+                    else:
+                        px, py = point
+                        points.append({"x": int(px), "y": int(py)})
+            brush_size = max(1, int(brush_size_raw or 32))
+            if points:
+                xs = [point["x"] for point in points]
+                ys = [point["y"] for point in points]
+                x1 = min(xs) - brush_size
+                y1 = min(ys) - brush_size
+                x2 = max(xs) + brush_size
+                y2 = max(ys) + brush_size
+            else:
+                x1 = int(region.get("x1", 0))
+                y1 = int(region.get("y1", 0))
+                x2 = int(region.get("x2", 0))
+                y2 = int(region.get("y2", 0))
+        else:
+            x1, y1, x2, y2 = (int(v) for v in region)
+            shape = "rect"
+            mode = "inherit"
+            pixel_size_raw = None
+            blur_radius_raw = None
+            brush_size = 32
+            points = []
+
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        if shape not in {"rect", "rounded", "ellipse", "triangle", "brush"}:
+            shape = "rect"
+        if mode not in {"inherit", "pixelate", "blur"}:
+            mode = "inherit"
+
+        spec: Dict[str, Any] = {
+            "x1": left,
+            "y1": top,
+            "x2": right,
+            "y2": bottom,
+            "shape": shape,
+            "mode": mode,
+        }
+        if shape == "brush":
+            spec["points"] = points
+            spec["brush_size"] = brush_size
+        if pixel_size_raw not in (None, ""):
+            spec["pixel_size"] = max(2, int(pixel_size_raw))
+        if blur_radius_raw not in (None, ""):
+            spec["blur_radius"] = max(1, int(blur_radius_raw))
+        return spec
+
     def _resolve_pixiv_sexual_depiction(
         self,
         *,
@@ -3465,12 +3606,28 @@ class WebviewBridge:
             return [255, 255, 255]
         return [int(cleaned[i:i + 2], 16) for i in (0, 2, 4)]
 
-    def _scale_regions(self, regions: List[Tuple[int, int, int, int]], factor: int) -> List[Tuple[int, int, int, int]]:
+    def _scale_regions(self, regions: List[Any], factor: int) -> List[Any]:
         if factor == 1:
-            return list(regions)
-        scaled: List[Tuple[int, int, int, int]] = []
-        for x1, y1, x2, y2 in regions:
-            scaled.append((int(x1 * factor), int(y1 * factor), int(x2 * factor), int(y2 * factor)))
+            return [dict(region) if isinstance(region, dict) else tuple(region) for region in regions]
+        scaled: List[Any] = []
+        for region in regions:
+            if isinstance(region, dict):
+                next_region = dict(region)
+                for key in ("x1", "y1", "x2", "y2"):
+                    next_region[key] = int(next_region.get(key, 0) * factor)
+                if isinstance(next_region.get("points"), list):
+                    next_region["points"] = [
+                        {"x": int(point.get("x", 0) * factor), "y": int(point.get("y", 0) * factor)}
+                        if isinstance(point, dict)
+                        else {"x": int(point[0] * factor), "y": int(point[1] * factor)}
+                        for point in next_region["points"]
+                    ]
+                if "brush_size" in next_region:
+                    next_region["brush_size"] = int(next_region.get("brush_size", 32) * factor)
+                scaled.append(next_region)
+            else:
+                x1, y1, x2, y2 = region
+                scaled.append((int(x1 * factor), int(y1 * factor), int(x2 * factor), int(y2 * factor)))
         return scaled
 
     def _preferred_extension(self, settings: Dict[str, Any]) -> str:
